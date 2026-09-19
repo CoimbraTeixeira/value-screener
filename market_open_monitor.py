@@ -86,11 +86,18 @@ def screen(tickers: list[str]) -> tuple[list, list[str]]:
 
 def build_message(results: list, changes: list, session: str,
                   failures: list[str]) -> str:
-    """The morning post: what changed first, then what is currently actionable."""
-    actionable = sorted(
-        (r for r in results if r.verdict in (valuation.BUY, valuation.WATCH)),
-        key=lambda r: -(r.margin_of_safety or 0))
+    """The morning post: what changed, then a call on every stock on the list.
+
+    Grouped by recommendation rather than listed alphabetically, because the grouping
+    is the answer -- a flat table of thirty-three rows makes the reader do the sorting
+    that the screener exists to do for them.
+
+    Length is not managed here. Discord rejects an over-long body outright, so the
+    caller splits on line boundaries; truncating instead would drop whichever stocks
+    happened to sort last.
+    """
     crossings = [c for c in changes if c.verdict_changed]
+    graded = [(r, *valuation.recommendation(r)) for r in results]
 
     lines = [f"**Market open** - {session} - {len(results)} screened"]
 
@@ -101,34 +108,29 @@ def build_message(results: list, changes: list, session: str,
             lines.append(f"- **{change.ticker}** {change.verdict_from} -> "
                          f"{change.verdict_to} ({change.describe()})")
 
-    if actionable:
+    for action, label in ((valuation.RECOMMEND_BUY, "BUY"),
+                          (valuation.RECOMMEND_HOLD, "HOLD"),
+                          (valuation.RECOMMEND_SELL, "SELL / would not own"),
+                          (valuation.RECOMMEND_NONE, "No call")):
+        group = [(r, reason) for r, act, reason in graded if act == action]
+        if not group:
+            continue
+        # Best margin first inside each group, so the strongest case leads.
+        group.sort(key=lambda pair: -(pair[0].margin_of_safety or -9))
         lines.append("")
-        lines.append("__Below estimated fair value__")
-        for r in actionable:
-            flags = f" - {r.flags[0]}" if r.flags else ""
-            lines.append(f"- **{r.ticker}** {r.price:,.2f} vs {r.fair_value:,.2f} est. "
-                         f"({r.margin_of_safety:.0%}) {r.verdict}{flags}")
-    else:
-        lines.append("")
-        lines.append("Nothing below estimated fair value today.")
-
-    gated = [r for r in results if r.verdict == valuation.AVOID]
-    if gated:
-        lines.append("")
-        lines.append(f"_{len(gated)} failing quality gates: "
-                     + ", ".join(r.ticker for r in gated[:8]) + "_")
+        lines.append(f"__{label} ({len(group)})__")
+        for result, reason in group:
+            lines.append(f"`{result.ticker:<9}` {result.price:>9,.2f} - {reason}")
 
     if failures:
-        lines.append(f"_{len(failures)} could not be fetched._")
+        lines.append("")
+        lines.append(f"_{len(failures)} could not be fetched: "
+                     + ", ".join(f.split(":")[0] for f in failures) + "_")
 
     lines.append("")
-    lines.append("_Estimates from disagreeing models. Not advice._")
-
-    message = "\n".join(lines)
-    if len(message) > DISCORD_LIMIT:
-        # Trim the actionable list rather than the changes: the changes are the news.
-        message = message[:DISCORD_LIMIT - 40].rsplit("\n", 1)[0] + "\n_(truncated)_"
-    return message
+    lines.append("_SELL means 'not worth owning at this price' -- no cost basis or tax "
+                 "is modelled. Estimates come from disagreeing models. Not advice._")
+    return "\n".join(lines)
 
 
 def parse_when(text: str) -> datetime:

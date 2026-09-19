@@ -304,8 +304,28 @@ Three guards stop a polling schedule becoming a spamming one:
   cron ticks are no-ops. A `flock` makes an overrunning run skip rather than double-post.
 
 The message leads with **what changed** — verdict crossings since the last recorded run
-— then what is currently below fair value. A list of verdicts is the same most mornings
-and gets skimmed into invisibility; a crossing is the reason to open the notification.
+— then gives a **BUY / HOLD / SELL call on every stock on the list**, grouped by call.
+Grouped rather than alphabetical, because the grouping is the answer: a flat table of
+thirty-three rows makes the reader do the sorting the screener exists to do.
+
+| Call | Trigger |
+|---|---|
+| `BUY` | Cleared the full bar: ≥30% margin, anchors agree, estimates not falling, gates passed |
+| `HOLD` | Within ±25% of the estimate, or cheap but blocked by disagreement or estimate cuts |
+| `SELL` | >25% above the estimate, **or** any failed quality gate regardless of price |
+| `N/A` | A fund or crypto — these models do not apply |
+
+**`SELL` does not mean "close your position".** A Yahoo watchlist export carries no
+quantity and no cost basis, so nothing here knows you hold it, what you paid, or what
+the tax would be. It means *not worth owning at this price*. For real holdings, the
+`--portfolio` table answers the stronger question with `EXIT`/`TRIM`/`HOLD`/`ADD`.
+
+A failed gate outranks a low price: the gates fire on unprofitable and cash-burning
+businesses, and cheapness is not a reason to own one. Mild overvaluation stays `HOLD`
+because the estimate's own error bar is wider than a ten-percent gap.
+
+Crossings lead because a verdict list is identical most mornings and gets skimmed into
+invisibility; a change is the reason to open the notification.
 
 ```
 **Market open** - 2026-09-21 - 33 screened
@@ -313,11 +333,19 @@ and gets skimmed into invisibility; a crossing is the reason to open the notific
 __Changed since last run__
 - **EQT** FAIR -> WATCH (wider on a -11% price fall)
 
-__Below estimated fair value__
-- **NOVO-B.CO** 281.55 vs 489.06 est. (42%) WATCH - analysts span 90% of price
-- **OTEX** 22.58 vs 34.45 est. (34%) WATCH - estimates falling (3 down vs 0 up in 30d)
+__HOLD (8)__
+`NOVO-B.CO`    281.55 - anchors disagree 5.4x -- estimate is weak
+`EQT      `     50.00 - estimates falling (8 down vs 0 up in 30d)
+`KO       `     88.25 - -15% vs estimate
 
-_6 failing quality gates: CL, IEP, INTC, IONQ, PEP, QUBT_
+__SELL / would not own (23)__
+`PEP      `    129.75 - leverage 2.4x equity (limit 2.0x)
+`INTC     `    108.60 - unprofitable (negative trailing EPS) (+2 more)
+`NVDA     `    222.27 - 48% above estimate
+`TSLA     `    364.27 - 1203% above estimate
+
+__No call (2)__
+`QQQ      `    721.45 - these models do not apply
 ```
 
 Webhook is read from `~/.config/fare-monitor/config.json`, shared with the other

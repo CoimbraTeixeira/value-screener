@@ -412,6 +412,67 @@ EXPENSIVE = "EXPENSIVE"
 AVOID = "AVOID"
 NO_DATA = "NO DATA"
 
+# --- Plain buy / hold / sell -----------------------------------------------------------
+#
+# The six verdicts above describe *why* a stock landed where it did, which is what makes
+# them worth reading and also what makes them a poor notification. These collapse them
+# into the three words a morning message can carry.
+#
+# One honest limit is baked into the wording. Without a cost basis -- a Yahoo watchlist
+# export has none -- SELL cannot mean "close your position", because nothing here knows
+# you hold one, what you paid, or what the tax would be. It means "this is not worth
+# owning at this price". For real holdings with quantity and cost, portfolio.review()
+# answers the stronger question with EXIT/TRIM/HOLD/ADD.
+
+RECOMMEND_BUY = "BUY"
+RECOMMEND_HOLD = "HOLD"
+RECOMMEND_SELL = "SELL"
+RECOMMEND_NONE = "N/A"
+
+# How far above fair value a stock must trade before the recommendation turns from
+# "do not add" into "do not own". Matches portfolio.TRIM_PREMIUM deliberately: the same
+# gap should not mean TRIM in one table and HOLD in another.
+SELL_PREMIUM = 0.25
+
+
+def recommendation(assessment: "Assessment") -> tuple[str, str]:
+    """One of BUY / HOLD / SELL / N/A, with the reason in a few words.
+
+    A quality-gate failure is a SELL regardless of price: the gates fire on unprofitable
+    or cash-burning businesses, and a cheap price is not a reason to own one. Mild
+    overvaluation is HOLD rather than SELL, because the estimate's own error bar is
+    wider than ten percent and churning on that noise costs spread for nothing.
+    """
+    if assessment.verdict == NO_DATA:
+        return RECOMMEND_NONE, "these models do not apply"
+    if assessment.verdict == AVOID:
+        # One failure plus a count, not the whole list: a business failing four gates is
+        # not four times as informative as one failing a single gate, and the full text
+        # runs past 150 characters on the worst names.
+        first = assessment.gate_failures[0] if assessment.gate_failures else "failed quality gates"
+        extra = len(assessment.gate_failures) - 1
+        return RECOMMEND_SELL, first + (f" (+{extra} more)" if extra > 0 else "")
+    if assessment.verdict == BUY:
+        return RECOMMEND_BUY, f"{assessment.margin_of_safety:.0%} below estimate"
+
+    margin = assessment.margin_of_safety
+    if margin is None:
+        return RECOMMEND_NONE, "no usable estimate"
+
+    # Margin is (fair - price) / fair, so a price 25% above fair value is a margin of
+    # -0.25/1.25 = -20%. Comparing in price terms keeps this aligned with SELL_PREMIUM.
+    if assessment.fair_value and assessment.price > assessment.fair_value * (1 + SELL_PREMIUM):
+        premium = assessment.price / assessment.fair_value - 1
+        return RECOMMEND_SELL, f"{premium:.0%} above estimate"
+
+    if assessment.verdict == WATCH and margin >= WATCH_MARGIN:
+        # Cheap enough to be interesting but blocked by disagreement or falling
+        # estimates; the note says which.
+        reason = assessment.notes[0] if assessment.notes else (
+            assessment.flags[0] if assessment.flags else f"{margin:.0%} below estimate")
+        return RECOMMEND_HOLD, reason
+    return RECOMMEND_HOLD, f"{margin:+.0%} vs estimate"
+
 
 @dataclass
 class Assessment:

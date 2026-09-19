@@ -312,7 +312,38 @@ def run_vector_query(args) -> str:
 
 
 
+DISCORD_LIMIT = 2000
+
+
+def split_message(text: str, limit: int = DISCORD_LIMIT) -> list[str]:
+    """Break an over-long body on line boundaries.
+
+    Discord rejects a body over the limit with an HTTP 400 rather than truncating it,
+    so a watchlist that grew past thirty-odd rows would silently stop posting entirely.
+    Splitting on newlines keeps a stock's row intact; a single line longer than the
+    limit is hard-cut, which cannot happen with the rows built here but would otherwise
+    loop forever.
+    """
+    chunks, current = [], ""
+    for line in text.split("\n"):
+        while len(line) > limit:
+            chunks.append(line[:limit])
+            line = line[limit:]
+        if len(current) + len(line) + 1 > limit:
+            # Only flush real content. When a hard-cut line lands exactly on the
+            # boundary `current` is still empty, and posting an empty body is an HTTP
+            # 400 from Discord -- the same failure this function exists to prevent.
+            if current.strip():
+                chunks.append(current.rstrip("\n"))
+            current = ""
+        current += line + "\n"
+    if current.strip():
+        chunks.append(current.rstrip("\n"))
+    return chunks or [""]
+
+
 def notify(message: str) -> None:
+    """Post to Discord, splitting if the body exceeds the limit."""
     import requests
 
     if not CONFIG_PATH.exists():
@@ -320,8 +351,9 @@ def notify(message: str) -> None:
     url = json.loads(CONFIG_PATH.read_text()).get("webhook_url")
     if not url:
         sys.exit(f"No 'webhook_url' key in {CONFIG_PATH}")
-    response = requests.post(url, json={"content": message}, timeout=30)
-    response.raise_for_status()
+    for chunk in split_message(message):
+        response = requests.post(url, json={"content": chunk}, timeout=30)
+        response.raise_for_status()
 
 
 def main() -> None:
