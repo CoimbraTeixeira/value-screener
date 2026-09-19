@@ -34,16 +34,23 @@ Example:
 
 ## How a verdict is reached
 
-**1. Four anchors, each free to abstain.** An anchor returns no value rather than a
+**1. Five anchors, each free to abstain.** An anchor returns no value rather than a
 guess — a loss-making company has no meaningful P/E, and inventing one produces a
 number that looks like the others and is pure noise.
 
 | Anchor | Method | Blind spot |
 |---|---|---|
-| `dcf` | Two-stage discounted free cash flow + net cash. Growth fades linearly to terminal over years 6–10. | Very sensitive to the discount rate. Abstains for banks, which have no meaningful FCF. |
+| `dcf` | Two-stage discounted free cash flow + net cash, adjusted for share issuance/buybacks. | Very sensitive to the discount rate. Abstains for banks, which have no meaningful FCF. |
 | `hist_pe` | Current EPS × the median multiple *this stock* has traded at. | Anchors to the past. Capped at 30x so a bubble year is not treated as normal. |
+| `fwd_pe` | Next year's consensus EPS at that same multiple, discounted back a year. | A forecast. Abstains below 3 analysts. |
 | `graham` | `sqrt(22.5 × EPS × book value)` | Hostile to asset-light businesses. Often the low outlier for software. |
 | `dividend` | Gordon growth, with dividend growth from ROE × retention. | Abstains below a 1.5% yield. |
+
+`fwd_pe` is the only anchor that can see a recovery coming — every other model reads
+the past, so a company emerging from a bad year is permanently condemned by trailing
+EPS. Gilead screens at 111 on history alone and 178 with estimates included, because
+its trailing loss is a one-off impairment. (The quality gates still say `AVOID`; see
+below.)
 
 **2. Quality gates veto first.** Negative EPS, negative free cash flow, leverage above
 2.0x equity, or negative ROE ⇒ `AVOID` regardless of how large the discount is. A cheap
@@ -57,14 +64,45 @@ blowing up should not drag the estimate.
 `BUY` becomes a `WATCH`. A 40% discount computed from models that contradict each other
 is noise with a decimal point.
 
+**5. Falling estimates veto a BUY.** Cheap *and* being revised down is the shape of a
+value trap: the price fell because the earnings are about to, and every backward-looking
+anchor is still pricing earnings that are disappearing. Triggered by the balance of
+analyst revisions over 30 days or consensus drift over 90.
+
 | Verdict | Meaning |
 |---|---|
-| `BUY` | ≥30% below fair value, anchors agree, gates passed |
-| `WATCH` | ≥10% below, or a big discount the anchors disagree about |
+| `BUY` | ≥30% below fair value, anchors agree, estimates not falling, gates passed |
+| `WATCH` | ≥10% below, or a big discount undermined by disagreement or estimate cuts |
 | `FAIR` | Within ±10% |
 | `EXPENSIVE` | >10% above |
 | `AVOID` | Failed a quality gate |
 | `NO DATA` | A fund, or fewer than two anchors computable |
+
+## Forward-looking data
+
+Forward data splits in two, and mixing the halves is how a screener becomes
+overconfident. Some of it changes *what a share is worth*; the rest changes *how much
+the estimate can be leaned on*. Only the first kind touches the number.
+
+**Priced in** — `fwd_pe` from consensus EPS; the DCF's growth rate, where forecasts join
+a `min()` with realised history and so can only ever *lower* it; and share issuance or
+buybacks, which divide future cash flows across future shares. That last one is
+arithmetic rather than prediction, and is the most reliable addition here.
+
+**Flagged only** — estimate revisions, days to the next results, analyst target spread,
+thin coverage, and insider buying. These appear as `FLAG` lines under `--explain`.
+
+**Deliberately excluded** — analyst *price targets*. They track the current price with a
+lag, so admitting them would launder consensus into an estimate whose entire purpose is
+to disagree with consensus. They are printed beside the result as a contrast and never
+enter it.
+
+Insider *selling* is only flagged above 0.5% of shares outstanding. Option exercises and
+scheduled 10b5-1 plans make routine selling near-universal — flagged naively it fires on
+almost every stock and tells you nothing.
+
+`--no-forward` values on reported history alone, which is a useful A/B: on NKE it is the
+difference between `EXPENSIVE` and `FAIR`.
 
 ## Using your Yahoo Finance list
 
@@ -149,7 +187,11 @@ sensitive to, so it is a flag rather than a buried constant.
 - **Banks and insurers** get no DCF — free cash flow is not meaningful for them, so they
   are valued on three anchors at most.
 - **Cyclicals** look cheapest at the top of their cycle, when trailing earnings peak.
-  This is the classic value trap and no anchor here detects it.
+  Falling estimates now veto a `BUY`, which catches the case where analysts have already
+  noticed. It will not catch a cycle turning that nobody has forecast yet.
+- **Analyst estimates are optimistic**, most of all for companies in trouble. They join
+  the growth `min()` rather than replacing history precisely so they can only ever lower
+  a valuation, never inflate one.
 - **Yahoo data is free and imperfect.** `info["freeCashflow"]` disagreed with Microsoft's
   own filed cash flow statement by 4x, which is why the annual statement is preferred and
   the summary field is only a fallback.
@@ -157,8 +199,10 @@ sensitive to, so it is a flag rather than a buried constant.
 
 ## Caching
 
-Two tiers, because quotes move every minute and annual statements move four times a
-year: quotes 1h, statements 7 days, in `cache/`. `--no-cache` bypasses both.
+Three tiers, matching how fast each kind of data actually moves: quotes 1h, analyst
+estimates 24h, annual statements 7 days, all in `cache/`. One TTL for all three would
+either serve stale prices or refetch five years of financials to learn a stock moved
+twelve cents. `--no-cache` bypasses all three.
 
 ## Tests
 

@@ -11,24 +11,32 @@ cost three extra HTTP round trips each. One TTL for both would either serve stal
 or refetch five years of financials to learn that a stock moved twelve cents.
 """
 
+import dataclasses
 import json
 import os
 import time
+from datetime import date
 from pathlib import Path
 
 import yfinance as yf
 
-from valuation import Fundamentals
+from valuation import Forward, Fundamentals
 
 REPO_DIR = Path(__file__).resolve().parent
 CACHE_DIR = REPO_DIR / "cache"
 
 QUOTE_TTL_SECONDS = 3600            # 1 hour
+FORWARD_TTL_SECONDS = 86400         # 1 day
 STATEMENT_TTL_SECONDS = 7 * 86400   # 7 days
 
 # Yahoo returns fiscal period ends; a market close on the exact date may not exist
 # (weekends, holidays), so the nearest close within this window is used instead.
 FISCAL_PRICE_TOLERANCE_DAYS = 7
+
+# A year-on-year share count change beyond this is a split or a data error, not an
+# issuance policy: Apple's 2019 count reads 4.4bn against 17bn in 2020 purely because of
+# the 4:1 split, and treating that as 280% dilution would gut every DCF that spans it.
+MAX_PLAUSIBLE_SHARE_CHANGE = 0.35
 
 
 def _cache_path(ticker: str, kind: str) -> Path:
@@ -121,9 +129,135 @@ def _historical_pe(ticker: yf.Ticker, income_statement) -> list[float]:
     return multiples
 
 
+def _cell(frame, row: str, column: str) -> float | None:
+    """One cell of an estimates table, or None if either axis is missing."""
+    if frame is None or getattr(frame, "empty", True):
+        return None
+    if row not in frame.index or column not in frame.columns:
+        return None
+    return _number(frame.loc[row, column])
+
+
+def _share_growth(ticker: yf.Ticker) -> float | None:
+    """Annualised change in share count: dilution positive, buybacks negative.
+
+    Splits are filtered rather than adjusted. yfinance's raw share series is not
+    split-adjusted, so a 4:1 split appears as a 300% one-year issuance; any year-on-year
+    step beyond a plausible issuance rate is dropped and the remaining span is used.
+    """
+    try:
+        series = ticker.get_shares_full(start="2019-01-01")
+    except Exception:
+        return None
+    if series is None or len(series) < 2:
+        return None
+    try:
+        yearly = series.resample("YE").last().dropna()
+    except Exception:
+        return None
+    counts = [float(v) for v in yearly.tolist() if v and v > 0]
+    if len(counts) < 2:
+        return None
+
+    # Walk backwards from the latest, stopping at the first implausible step.
+    usable = [counts[-1]]
+    for earlier, later in zip(reversed(counts[:-1]), reversed(counts[1:])):
+        if earlier <= 0 or abs(later / earlier - 1.0) > MAX_PLAUSIBLE_SHARE_CHANGE:
+            break
+        usable.insert(0, earlier)
+    if len(usable) < 2:
+        return None
+    years = len(usable) - 1
+    return (usable[-1] / usable[0]) ** (1.0 / years) - 1.0
+
+
+def _forward_payload(ticker: yf.Ticker, info: dict) -> dict:
+    """Analyst estimates, revision momentum, earnings date and insider flow.
+
+    Every lookup is individually guarded: Yahoo serves these from separate endpoints and
+    a small or foreign listing routinely has some and not others, which must degrade to
+    a missing field rather than losing the whole forward payload.
+    """
+    payload: dict = {}
+
+    try:
+        estimates = ticker.earnings_estimate
+        payload["eps_next_year"] = _cell(estimates, "+1y", "avg")
+        payload["eps_year_after"] = _cell(estimates, "+2y", "avg")
+        count = _cell(estimates, "+1y", "numberOfAnalysts")
+        payload["analyst_count"] = int(count) if count else None
+    except Exception:
+        pass
+
+    try:
+        payload["revenue_growth_next_year"] = _cell(ticker.revenue_estimate, "+1y", "growth")
+    except Exception:
+        pass
+
+    try:
+        growth = ticker.growth_estimates
+        # 'LTG' is the multi-year forecast and is frequently absent; +1y is the fallback.
+        payload["long_term_growth"] = (_cell(growth, "LTG", "stockTrend")
+                                       or _cell(growth, "+1y", "stockTrend"))
+    except Exception:
+        pass
+
+    try:
+        revisions = ticker.eps_revisions
+        up = _cell(revisions, "+1y", "upLast30days")
+        down = _cell(revisions, "+1y", "downLast30days")
+        payload["revisions_up"] = int(up) if up is not None else None
+        payload["revisions_down"] = int(down) if down is not None else None
+    except Exception:
+        pass
+
+    try:
+        trend = ticker.eps_trend
+        current = _cell(trend, "+1y", "current")
+        ago = _cell(trend, "+1y", "90daysAgo")
+        if current and ago and ago > 0:
+            payload["eps_drift_90d"] = current / ago - 1.0
+    except Exception:
+        pass
+
+    payload["target_high"] = _number(info.get("targetHighPrice"))
+    payload["target_low"] = _number(info.get("targetLowPrice"))
+
+    try:
+        calendar = ticker.calendar or {}
+        dates = calendar.get("Earnings Date") or []
+        if dates:
+            payload["days_to_earnings"] = (dates[0] - date.today()).days
+    except Exception:
+        pass
+
+    try:
+        insider = ticker.insider_transactions
+        if insider is not None and not insider.empty and "Shares" in insider.columns:
+            recent = insider.head(40)
+            # 'D' is a disposal in Yahoo's Ownership column; anything else is an
+            # acquisition. Net shares, so routine option-exercise sales do not read as
+            # a signal on their own.
+            net = 0.0
+            for _, row in recent.iterrows():
+                shares = _number(row.get("Shares")) or 0.0
+                net += -shares if str(row.get("Ownership", "")).upper() == "D" else shares
+            payload["insider_net_shares_6m"] = net or None
+    except Exception:
+        pass
+
+    return payload
+
+
 def fetch(ticker: str, *, quote_ttl: float = QUOTE_TTL_SECONDS,
-          statement_ttl: float = STATEMENT_TTL_SECONDS) -> Fundamentals:
-    """Everything the models need for one ticker, cached in two tiers.
+          statement_ttl: float = STATEMENT_TTL_SECONDS,
+          forward_ttl: float = FORWARD_TTL_SECONDS,
+          with_forward: bool = True) -> Fundamentals:
+    """Everything the models need for one ticker, cached in three tiers.
+
+    Quotes move every minute, analyst estimates a few times a month, annual statements
+    four times a year -- one TTL for all three would either serve stale prices or
+    refetch five years of financials to learn a stock moved twelve cents.
 
     Raises ValueError when the ticker has no price at all, which is how a typo or a
     delisting shows up; every other missing field is left as None for the anchors to
@@ -132,6 +266,7 @@ def fetch(ticker: str, *, quote_ttl: float = QUOTE_TTL_SECONDS,
     symbol = ticker.upper().strip()
     quote_file = _cache_path(symbol, "quote")
     statement_file = _cache_path(symbol, "statements")
+    forward_file = _cache_path(symbol, "forward")
 
     handle = None
     quote = _read_cache(quote_file, quote_ttl)
@@ -143,7 +278,7 @@ def fetch(ticker: str, *, quote_ttl: float = QUOTE_TTL_SECONDS,
             "currency", "quoteType", "sector", "trailingEps", "bookValue",
             "freeCashflow", "sharesOutstanding", "totalCash", "totalDebt", "beta",
             "dividendRate", "payoutRatio", "returnOnEquity", "debtToEquity",
-            "earningsGrowth", "targetMeanPrice")}
+            "earningsGrowth", "targetMeanPrice", "targetHighPrice", "targetLowPrice")}
         quote["fetched_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         _write_cache(quote_file, quote)
 
@@ -160,6 +295,15 @@ def fetch(ticker: str, *, quote_ttl: float = QUOTE_TTL_SECONDS,
             "historical_pe": _historical_pe(handle, income),
         }
         _write_cache(statement_file, statements)
+
+    forward_payload = None
+    if with_forward:
+        forward_payload = _read_cache(forward_file, forward_ttl)
+        if forward_payload is None:
+            handle = handle or yf.Ticker(symbol)
+            forward_payload = _forward_payload(handle, quote)
+            forward_payload["share_growth"] = _share_growth(handle)
+            _write_cache(forward_file, forward_payload)
 
     price = (_number(quote.get("currentPrice")) or _number(quote.get("regularMarketPrice"))
              or _number(quote.get("previousClose")))
@@ -203,4 +347,17 @@ def fetch(ticker: str, *, quote_ttl: float = QUOTE_TTL_SECONDS,
         eps_history=[v for v in statements.get("eps_history", []) if v is not None],
         historical_pe=[v for v in statements.get("historical_pe", []) if v is not None],
         fetched_at=quote.get("fetched_at", ""),
+        forward=_build_forward(forward_payload),
     )
+
+
+def _build_forward(payload: dict | None) -> Forward | None:
+    """Turn a cached forward payload into a Forward, ignoring keys it does not define.
+
+    Tolerant of unknown keys so a cache written by a newer version does not crash an
+    older one -- the cache outlives a single run by a day.
+    """
+    if not payload:
+        return None
+    known = {f.name for f in dataclasses.fields(Forward)}
+    return Forward(**{k: v for k, v in payload.items() if k in known})

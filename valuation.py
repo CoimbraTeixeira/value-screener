@@ -61,6 +61,29 @@ MIN_MEANINGFUL_YIELD = 0.015
 # means at least one model does not fit this business.
 MAX_TRUSTED_DISPERSION = 2.5
 
+# Share-count change is clamped before it reaches the DCF. A one-off acquisition paid in
+# stock, or a buyback funded by a single asset sale, is not a policy that runs for ten
+# years, and extrapolating it as one dominates the result.
+MAX_SHARE_GROWTH = 0.10
+MIN_SHARE_GROWTH = -0.05
+
+# Net downward estimate revisions this severe mark a business whose forecasts are being
+# cut. Cheapness plus falling estimates is the shape of a value trap, so this vetoes a
+# BUY rather than adjusting a number.
+FALLING_ESTIMATES_RATIO = -0.30
+FALLING_ESTIMATES_DRIFT = -0.02
+
+# Analyst coverage below this makes the forward estimates one or two people's opinion.
+MIN_ANALYST_COVERAGE = 3
+
+# A results release can move a share more than a quarter of screening does, so a buy
+# decision inside this window is a coin toss on the print.
+EARNINGS_SOON_DAYS = 7
+
+# Insider selling below this share of the company is routine compensation mechanics, not
+# a position change worth reading anything into.
+MATERIAL_INSIDER_SALE = 0.005
+
 
 @dataclass
 class Fundamentals:
@@ -99,6 +122,46 @@ class Fundamentals:
     historical_pe: list[float] = field(default_factory=list)
 
     fetched_at: str = ""
+    # Forward-looking inputs, absent unless the caller fetched them.
+    forward: "Forward | None" = None
+
+
+@dataclass
+class Forward:
+    """Analyst estimates and share-count trend: what the market expects next.
+
+    Split from Fundamentals because these are a different kind of input. Everything
+    above is reported history; everything here is a forecast, and forecasts are wrong in
+    a direction -- sell-side estimates are persistently optimistic, most of all for the
+    companies in most trouble. So these widen or veto a conclusion far more often than
+    they raise a fair value.
+
+    Analyst *price targets* are deliberately not among the valuation inputs. They track
+    the current price with a lag and adding them would launder consensus into an
+    estimate whose whole purpose is to disagree with consensus. They are carried only to
+    be displayed as a contrast.
+    """
+
+    eps_next_year: float | None = None
+    eps_year_after: float | None = None
+    revenue_growth_next_year: float | None = None
+    long_term_growth: float | None = None
+    analyst_count: int | None = None
+
+    # Estimate momentum: how many analysts moved which way in the last 30 days, and how
+    # far the consensus for next year has travelled in 90.
+    revisions_up: int | None = None
+    revisions_down: int | None = None
+    eps_drift_90d: float | None = None
+
+    target_high: float | None = None
+    target_low: float | None = None
+
+    # Annualised change in share count. Positive is dilution, negative is buyback.
+    share_growth: float | None = None
+
+    days_to_earnings: int | None = None
+    insider_net_shares_6m: float | None = None
 
 
 @dataclass
@@ -139,16 +202,22 @@ def discount_rate(beta: float | None, risk_free: float = DEFAULT_RISK_FREE,
 def estimate_growth(fundamentals: Fundamentals) -> float:
     """Stage-one growth rate for the DCF.
 
-    Takes the *lower* of realised free-cash-flow growth and the analyst earnings growth
-    estimate. The two disagree often, and when they do the conservative one is the one
-    that does not depend on a forecast being right. Absent both, growth is zero: a
-    no-growth DCF still values the existing cash stream, which is a defensible floor.
+    Takes the *lowest* of realised free-cash-flow growth, the analyst earnings growth
+    estimate, the long-term growth forecast and next year's revenue growth estimate.
+    They disagree often, and when they do the conservative one is the one least
+    dependent on a forecast being right -- sell-side estimates are persistently
+    optimistic and most so for companies in trouble, which is exactly when a screener
+    must not be. Absent all of them, growth is zero: a no-growth DCF still values the
+    existing cash stream, which is a defensible floor.
     """
-    candidates = [g for g in (cagr(fundamentals.fcf_history), fundamentals.earnings_growth)
-                  if g is not None]
-    if not candidates:
+    candidates = [cagr(fundamentals.fcf_history), fundamentals.earnings_growth]
+    forward = fundamentals.forward
+    if forward:
+        candidates += [forward.long_term_growth, forward.revenue_growth_next_year]
+    usable = [g for g in candidates if g is not None]
+    if not usable:
         return MIN_STAGE1_GROWTH
-    return min(MAX_STAGE1_GROWTH, max(MIN_STAGE1_GROWTH, min(candidates)))
+    return min(MAX_STAGE1_GROWTH, max(MIN_STAGE1_GROWTH, min(usable)))
 
 
 def dcf_anchor(f: Fundamentals, risk_free: float = DEFAULT_RISK_FREE,
@@ -173,6 +242,16 @@ def dcf_anchor(f: Fundamentals, risk_free: float = DEFAULT_RISK_FREE,
                                    f"discount rate {rate:.1%}")
 
     growth = estimate_growth(f)
+
+    # Future cash flows are split across future shares, so a company issuing stock is
+    # worth less per share even with identical cash flows. Dividing each year's flow by
+    # the grown share count is exact under constant issuance, and avoids the usual fudge
+    # of valuing tomorrow's cash against today's share count. Buybacks run the same
+    # arithmetic in reverse.
+    share_growth = 0.0
+    if f.forward and f.forward.share_growth is not None:
+        share_growth = min(MAX_SHARE_GROWTH, max(MIN_SHARE_GROWTH, f.forward.share_growth))
+
     cash_flow = f.free_cash_flow
     present_value = 0.0
     fade_years = DCF_YEARS - DCF_STAGE1_YEARS
@@ -183,19 +262,26 @@ def dcf_anchor(f: Fundamentals, risk_free: float = DEFAULT_RISK_FREE,
             progress = (year - DCF_STAGE1_YEARS) / fade_years
             year_growth = growth + (terminal_growth - growth) * progress
         cash_flow *= 1.0 + year_growth
-        present_value += cash_flow / (1.0 + rate) ** year
+        dilution = (1.0 + share_growth) ** year
+        present_value += cash_flow / dilution / (1.0 + rate) ** year
 
     terminal_value = cash_flow * (1.0 + terminal_growth) / (rate - terminal_growth)
-    present_value += terminal_value / (1.0 + rate) ** DCF_YEARS
+    present_value += (terminal_value / (1.0 + share_growth) ** DCF_YEARS
+                      / (1.0 + rate) ** DCF_YEARS)
 
+    # Net cash belongs to today's shareholders, so it is not diluted by future issuance.
     net_cash = (f.total_cash or 0.0) - (f.total_debt or 0.0)
     per_share = (present_value + net_cash) / f.shares_outstanding
     if per_share <= 0:
         # Net debt can exceed the discounted cash stream. That is a real result, but it
         # is a solvency statement rather than a price, so it is not offered as a target.
         return Anchor("dcf", None, "net debt exceeds discounted cash flows")
-    return Anchor("dcf", per_share,
-                  f"{growth:.1%} growth, {rate:.1%} discount, {terminal_growth:.1%} terminal")
+
+    detail = f"{growth:.1%} growth, {rate:.1%} discount, {terminal_growth:.1%} terminal"
+    if share_growth:
+        detail += (f", {abs(share_growth):.1%}/yr "
+                   f"{'dilution' if share_growth > 0 else 'buyback'}")
+    return Anchor("dcf", per_share, detail)
 
 
 def historical_pe_anchor(f: Fundamentals, max_pe: float = DEFAULT_MAX_ANCHOR_PE) -> Anchor:
@@ -218,6 +304,40 @@ def historical_pe_anchor(f: Fundamentals, max_pe: float = DEFAULT_MAX_ANCHOR_PE)
         typical = max_pe
         note += f", capped at {max_pe:.0f}x"
     return Anchor("hist_pe", typical * f.eps_trailing, note)
+
+
+def forward_pe_anchor(f: Fundamentals, max_pe: float = DEFAULT_MAX_ANCHOR_PE,
+                      risk_free: float = DEFAULT_RISK_FREE,
+                      equity_premium: float = DEFAULT_EQUITY_PREMIUM) -> Anchor:
+    """Next year's consensus earnings at this stock's own historical multiple.
+
+    The one place analyst forecasts earn a vote. It is the only anchor that can see a
+    recovery coming -- every other model here reads the past, so a company emerging from
+    a bad year is permanently condemned by trailing EPS. The estimate is discounted back
+    one year, because a value that arrives twelve months from now is not worth its face
+    amount today.
+
+    Guarded by analyst coverage: with one or two estimates this is an opinion, not a
+    consensus, and it would otherwise carry the same weight as four years of filings.
+    """
+    forward = f.forward
+    if not forward or not forward.eps_next_year or forward.eps_next_year <= 0:
+        return Anchor("fwd_pe", None, "no positive forward EPS estimate")
+    if (forward.analyst_count or 0) < MIN_ANALYST_COVERAGE:
+        return Anchor("fwd_pe", None,
+                      f"only {forward.analyst_count or 0} analysts covering")
+    usable = [pe for pe in f.historical_pe if pe and pe > 0]
+    if len(usable) < 2:
+        return Anchor("fwd_pe", None, "insufficient multiple history")
+
+    typical = median(usable)
+    note = f"{forward.eps_next_year:,.2f} est. EPS at {typical:.1f}x"
+    if typical > max_pe:
+        typical = max_pe
+        note = f"{forward.eps_next_year:,.2f} est. EPS at {max_pe:.0f}x (capped)"
+    rate = discount_rate(f.beta, risk_free, equity_premium)
+    return Anchor("fwd_pe", typical * forward.eps_next_year / (1.0 + rate),
+                  note + f", discounted a year at {rate:.1%}")
 
 
 def graham_anchor(f: Fundamentals) -> Anchor:
@@ -296,6 +416,9 @@ class Assessment:
     gate_failures: list[str]
     notes: list[str]
     analyst_target: float | None = None
+    # Forward-looking warnings. Distinct from gate_failures: a gate says the business is
+    # broken today, a flag says the estimate ahead of it is not to be leaned on.
+    flags: list[str] = field(default_factory=list)
 
     @property
     def usable_anchors(self) -> list[Anchor]:
@@ -331,6 +454,74 @@ def dispersion(anchors: list[Anchor]) -> float | None:
     return max(values) / min(values)
 
 
+def estimates_falling(forward: Forward | None) -> bool:
+    """Whether next year's consensus is being cut.
+
+    Two independent readings, either of which counts: the balance of analysts revising
+    down over the last 30 days, and how far the consensus itself has drifted over 90.
+    The count catches a sharp recent turn; the drift catches a slow grind that never
+    shows up as a dramatic week.
+    """
+    if forward is None:
+        return False
+    up, down = forward.revisions_up, forward.revisions_down
+    if up is not None and down is not None and (up + down) > 0:
+        if (up - down) / (up + down) <= FALLING_ESTIMATES_RATIO:
+            return True
+    drift = forward.eps_drift_90d
+    return drift is not None and drift <= FALLING_ESTIMATES_DRIFT
+
+
+def forward_flags(f: Fundamentals) -> list[str]:
+    """Forward-looking warnings, in plain language.
+
+    None of these touch the fair value. They describe how much weight the estimate will
+    bear, which is a separate question from what the number is, and folding them into
+    the price would produce a single figure that quietly encodes four opinions.
+    """
+    forward = f.forward
+    if forward is None:
+        return []
+
+    flags = []
+    if estimates_falling(forward):
+        up, down = forward.revisions_up or 0, forward.revisions_down or 0
+        drift = forward.eps_drift_90d
+        detail = f"{down} down vs {up} up in 30d" if (up + down) else ""
+        if drift is not None and drift <= FALLING_ESTIMATES_DRIFT:
+            detail = (detail + ", " if detail else "") + f"consensus {drift:.1%} in 90d"
+        flags.append(f"estimates falling ({detail})")
+
+    if forward.share_growth is not None and forward.share_growth > 0.02:
+        flags.append(f"diluting {forward.share_growth:.1%}/yr")
+
+    if (forward.analyst_count or 0) and forward.analyst_count < MIN_ANALYST_COVERAGE:
+        flags.append(f"thin coverage ({forward.analyst_count} analysts)")
+
+    if forward.days_to_earnings is not None and 0 <= forward.days_to_earnings <= EARNINGS_SOON_DAYS:
+        flags.append(f"reports in {forward.days_to_earnings}d")
+
+    if forward.target_high and forward.target_low and f.price > 0:
+        span = (forward.target_high - forward.target_low) / f.price
+        if span > 0.8:
+            flags.append(f"analysts span {span:.0%} of price")
+
+    # Insider *selling* is close to universal -- option exercises and scheduled 10b5-1
+    # plans generate it continuously at healthy companies, so flagging it fires on
+    # almost every stock and carries no information. Only buying, which an insider has
+    # no routine reason to do, and selling large enough to be a real change of
+    # position, are worth a line.
+    net_insider = forward.insider_net_shares_6m
+    if net_insider and f.shares_outstanding:
+        share = abs(net_insider) / f.shares_outstanding
+        if net_insider > 0:
+            flags.append(f"insiders net buyers ({share:.2%} of shares)")
+        elif share >= MATERIAL_INSIDER_SALE:
+            flags.append(f"heavy insider selling ({share:.2%} of shares)")
+
+    return flags
+
+
 def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
            equity_premium: float = DEFAULT_EQUITY_PREMIUM,
            terminal_growth: float = DEFAULT_TERMINAL_GROWTH,
@@ -347,10 +538,12 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
     anchors = [
         dcf_anchor(f, risk_free, equity_premium, terminal_growth),
         historical_pe_anchor(f, max_anchor_pe),
+        forward_pe_anchor(f, max_anchor_pe, risk_free, equity_premium),
         graham_anchor(f),
         dividend_anchor(f, risk_free, equity_premium),
     ]
     gate_failures = check_gates(f, max_debt_to_equity, min_roe)
+    flags = forward_flags(f)
     notes: list[str] = []
 
     if f.quote_type and f.quote_type != "EQUITY":
@@ -359,7 +552,7 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
         return Assessment(f.ticker, f.name, f.price, f.currency, NO_DATA, None, None,
                           anchors, gate_failures,
                           [f"{f.quote_type} is not a single company; these models do not apply"],
-                          f.analyst_target)
+                          f.analyst_target, flags)
 
     usable = [a for a in anchors if a.value is not None]
     if len(usable) < 2:
@@ -369,7 +562,8 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
         return Assessment(f.ticker, f.name, f.price, f.currency,
                           AVOID if gate_failures else NO_DATA, None, None,
                           anchors, gate_failures,
-                          ["fewer than two anchors could be computed"], f.analyst_target)
+                          ["fewer than two anchors could be computed"], f.analyst_target,
+                          flags)
 
     fair_value = median(a.value for a in usable)
     margin = (fair_value - f.price) / fair_value if fair_value > 0 else None
@@ -379,14 +573,19 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
     if wide:
         notes.append(f"anchors disagree {spread:.1f}x -- estimate is weak")
 
+    falling = estimates_falling(f.forward)
+
     if gate_failures:
         verdict = AVOID
     elif margin is None:
         verdict = NO_DATA
     elif margin >= buy_margin:
-        # A large discount computed from anchors that contradict each other is not a
-        # finding, it is noise with a decimal point. Downgrade rather than act on it.
-        verdict = WATCH if wide else BUY
+        # Two ways a large discount fails to be a finding. Anchors that contradict each
+        # other are noise with a decimal point. Cheapness while the forecasts underneath
+        # it are being cut is the shape of a value trap: the price has fallen because the
+        # earnings are going to, and every backward-looking anchor is still pricing the
+        # earnings that are about to disappear.
+        verdict = WATCH if (wide or falling) else BUY
     elif margin >= WATCH_MARGIN:
         verdict = WATCH
     elif margin >= FAIR_MARGIN:
@@ -400,4 +599,4 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
             notes.append(f"analyst target {f.analyst_target:,.2f} is {gap:.1f}x this estimate")
 
     return Assessment(f.ticker, f.name, f.price, f.currency, verdict, fair_value, margin,
-                      anchors, gate_failures, notes, f.analyst_target)
+                      anchors, gate_failures, notes, f.analyst_target, flags)

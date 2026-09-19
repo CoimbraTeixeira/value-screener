@@ -20,7 +20,8 @@ from pathlib import Path
 
 import portfolio
 import valuation
-from market_data import QUOTE_TTL_SECONDS, STATEMENT_TTL_SECONDS, fetch
+from market_data import (FORWARD_TTL_SECONDS, QUOTE_TTL_SECONDS,
+                         STATEMENT_TTL_SECONDS, fetch)
 from valuation import assess
 
 REPO_DIR = Path(__file__).resolve().parent
@@ -69,11 +70,16 @@ def load_watchlist(path: Path) -> list[str]:
 def format_row(a: valuation.Assessment) -> str:
     fair = f"{a.fair_value:>10,.2f}" if a.fair_value else f"{'--':>10}"
     margin = f"{a.margin_of_safety:>7.0%}" if a.margin_of_safety is not None else f"{'--':>7}"
+    # Priority: a broken business first, then why the estimate is weak, then what is
+    # coming. A row has space for one reason and these are in decreasing order of how
+    # much they should change what you do next.
     reason = ""
     if a.gate_failures:
         reason = "; ".join(a.gate_failures)
     elif a.notes:
         reason = a.notes[0]
+    elif a.flags:
+        reason = "; ".join(a.flags)
     return (f"{VERDICT_MARK[a.verdict]} {a.ticker:<6} {a.price:>10,.2f} {fair} {margin}  "
             f"{a.verdict:<9} {reason[:44]}")
 
@@ -103,6 +109,8 @@ def format_explanation(a: valuation.Assessment) -> str:
         lines.append(f"  GATE      {failure}")
     for note in a.notes:
         lines.append(f"  NOTE      {note}")
+    for flag in a.flags:
+        lines.append(f"  FLAG      {flag}")
     lines.append(f"  -> {a.verdict}")
     return "\n".join(lines)
 
@@ -213,6 +221,9 @@ def main() -> None:
     parser.add_argument("--max-debt-to-equity", type=float, default=valuation.MAX_DEBT_TO_EQUITY,
                         help="Leverage gate, in percent (200 = 2.0x equity)")
     parser.add_argument("--no-cache", action="store_true", help="Refetch everything")
+    parser.add_argument("--no-forward", action="store_true",
+                        help="Ignore analyst estimates, revisions and share-count trend; "
+                             "value on reported history alone")
     parser.add_argument("--portfolio", metavar="CSV",
                         help="Screen a Yahoo Finance portfolio/watchlist export instead "
                              "of watchlist.json")
@@ -234,11 +245,14 @@ def main() -> None:
                or load_watchlist(WATCHLIST_PATH))
     quote_ttl = 0 if args.no_cache else QUOTE_TTL_SECONDS
     statement_ttl = 0 if args.no_cache else STATEMENT_TTL_SECONDS
+    forward_ttl = 0 if args.no_cache else FORWARD_TTL_SECONDS
 
     results, failures = [], []
     for ticker in tickers:
         try:
-            fundamentals = fetch(ticker, quote_ttl=quote_ttl, statement_ttl=statement_ttl)
+            fundamentals = fetch(ticker, quote_ttl=quote_ttl, statement_ttl=statement_ttl,
+                                 forward_ttl=forward_ttl,
+                                 with_forward=not args.no_forward)
         except Exception as exc:
             # One unknown ticker must not abort a 30-stock run; collect and report.
             failures.append(f"{ticker}: {exc}")
@@ -266,7 +280,7 @@ def main() -> None:
             "verdict": r.verdict, "fair_value": r.fair_value,
             "margin_of_safety": r.margin_of_safety,
             "anchors": {a.name: a.value for a in r.anchors},
-            "gate_failures": r.gate_failures, "notes": r.notes,
+            "gate_failures": r.gate_failures, "notes": r.notes, "flags": r.flags,
         } for r in results], indent=2))
     elif args.explain:
         for r in results:
