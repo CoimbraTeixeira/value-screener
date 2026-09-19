@@ -1,0 +1,17 @@
+{
+  "_comment": "Tickers to screen. Edit freely; the screener accepts a bare list here too.",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "JNJ",
+    "KO",
+    "PG",
+    "PFE",
+    "VZ",
+    "XOM",
+    "JPM",
+    "INTC",
+    "NKE"
+  ]
+}

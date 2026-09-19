@@ -1,0 +1,185 @@
+# value-screener
+
+Screens a watchlist for a margin of safety against an estimated fair value.
+
+**This does not know the correct price of anything.** No tool does. What it does is
+apply four independent valuation models to each stock, refuse to act when they
+disagree, veto on business quality before considering price at all, and show its
+working. A `BUY` here means *"passed a mechanical filter, worth reading the filings
+for"* — nothing more.
+
+## Usage
+
+```sh
+pip install -r requirements.txt
+cp watchlist.example.json watchlist.json   # your list; gitignored
+
+./value_screener.py                      # screen watchlist.json
+./value_screener.py AAPL MSFT KO         # screen specific tickers
+./value_screener.py --explain KO         # every anchor, including abstentions
+./value_screener.py --only BUY,WATCH     # just the actionable rows
+./value_screener.py --json               # machine-readable
+./value_screener.py --notify             # post a summary to Discord
+```
+
+Example:
+
+```
+   TICKER      PRICE   FAIR EST  MARGIN  VERDICT   NOTE
+ x JPM        349.67     255.08    -37%  AVOID     burning cash (negative free cash flow)
+ - CSCO       109.51      40.02   -174%  EXPENSIVE analyst target 137.62 is 3.4x this estimate
+   MO          69.52      63.43    -10%  FAIR
+++ T           25.40      39.74     36%  BUY
+```
+
+## How a verdict is reached
+
+**1. Four anchors, each free to abstain.** An anchor returns no value rather than a
+guess — a loss-making company has no meaningful P/E, and inventing one produces a
+number that looks like the others and is pure noise.
+
+| Anchor | Method | Blind spot |
+|---|---|---|
+| `dcf` | Two-stage discounted free cash flow + net cash. Growth fades linearly to terminal over years 6–10. | Very sensitive to the discount rate. Abstains for banks, which have no meaningful FCF. |
+| `hist_pe` | Current EPS × the median multiple *this stock* has traded at. | Anchors to the past. Capped at 30x so a bubble year is not treated as normal. |
+| `graham` | `sqrt(22.5 × EPS × book value)` | Hostile to asset-light businesses. Often the low outlier for software. |
+| `dividend` | Gordon growth, with dividend growth from ROE × retention. | Abstains below a 1.5% yield. |
+
+**2. Quality gates veto first.** Negative EPS, negative free cash flow, leverage above
+2.0x equity, or negative ROE ⇒ `AVOID` regardless of how large the discount is. A cheap
+share in a failing business is usually cheap for a reason. A *missing* field is not a
+failure — that is a gap in the feed, not evidence of a bad business.
+
+**3. Fair value is the median of the surviving anchors.** Median, not mean: one model
+blowing up should not drag the estimate.
+
+**4. Disagreement downgrades.** If the highest anchor is more than 2.5x the lowest, a
+`BUY` becomes a `WATCH`. A 40% discount computed from models that contradict each other
+is noise with a decimal point.
+
+| Verdict | Meaning |
+|---|---|
+| `BUY` | ≥30% below fair value, anchors agree, gates passed |
+| `WATCH` | ≥10% below, or a big discount the anchors disagree about |
+| `FAIR` | Within ±10% |
+| `EXPENSIVE` | >10% above |
+| `AVOID` | Failed a quality gate |
+| `NO DATA` | A fund, or fewer than two anchors computable |
+
+## Using your Yahoo Finance list
+
+Yahoo has no public portfolio API, and the private one needs a signed-in session.
+**Your password is never needed and should never be given to a script** — Yahoo
+2FA-blocks scripted logins, so it would fail anyway. Two working routes:
+
+### Reuse your Firefox login (no password)
+
+Firefox stores cookies unencrypted, so an existing Yahoo login can be reused directly.
+Chrome encrypts its cookie store with a per-user key, so this is Firefox-only.
+
+```sh
+./value_screener.py --yahoo-status     # is a reusable login present?
+./value_screener.py --from-yahoo       # screen the signed-in portfolio
+```
+
+If it reports no session, log in at finance.yahoo.com in Firefox and re-run. The
+signed-out page returns HTTP 200 rather than a 401, so the session is checked *before*
+parsing — otherwise "signed out" and "empty portfolio" would look identical.
+
+### Or export the CSV (no account access at all)
+
+Yahoo Finance → your portfolio → ⋮ → **Export**. This route is better in one respect:
+the export carries **quantity and cost basis**, which a watchlist does not.
+
+```sh
+./value_screener.py --portfolio ~/Downloads/quotes.csv
+```
+
+Columns are matched by name, not position, because Yahoo reorders them between the
+portfolio and watchlist views.
+
+## Holdings-aware output
+
+When the source carries quantity, a second table answers the holder's question, which
+is not the buyer's question — a stock can be simultaneously "don't buy more" and "worth
+keeping":
+
+```
+HOLDINGS        VALUE  WEIGHT      P/L  ACTION WHY
+GILD           22,517  20.2%     121%  EXIT   unprofitable (negative trailing EPS)
+KO             26,475  23.8%      96%  TRIM   72% above estimated fair value
+MO             27,808  25.0%      55%  HOLD   fair
+T              12,700  11.4%      40%  ADD    still 36% below fair value
+TOTAL         111,402
+```
+
+| Action | Trigger |
+|---|---|
+| `EXIT` | Failed a quality gate — regardless of gain |
+| `TRIM` | >25% above estimated fair value |
+| `HOLD` | Neither |
+| `ADD` | Still screens `BUY` |
+
+`GILD` above is the case a buy-only screener never shows you: **up 121% and flagged
+EXIT**. The gain is exactly what makes that hard to see.
+
+The sell threshold (25%) is deliberately wider than the buy threshold, because
+declining to buy is free while selling costs spread and tax. **Tax is not modelled** —
+a `TRIM` on a long-held position may well be wrong after capital gains.
+
+## Tuning
+
+Defaults are conservative on purpose. The discount rate is the input a DCF is most
+sensitive to, so it is a flag rather than a buried constant.
+
+```sh
+--buy-margin 0.4          # demand a 40% discount
+--risk-free 0.045         # risk-free rate (default 4%)
+--equity-premium 0.06     # equity risk premium (default 5%)
+--terminal-growth 0.02    # perpetual growth after year 10 (default 2.5%)
+--max-debt-to-equity 150  # leverage gate, percent (default 200 = 2.0x)
+--no-cache                # refetch everything
+```
+
+## Known limits
+
+- **Trailing EPS is TTM**, so a one-off writedown flips a healthy company to `AVOID`.
+  Gilead screens as unprofitable on a single impairment charge. Read the `--explain`
+  output before believing a verdict.
+- **Banks and insurers** get no DCF — free cash flow is not meaningful for them, so they
+  are valued on three anchors at most.
+- **Cyclicals** look cheapest at the top of their cycle, when trailing earnings peak.
+  This is the classic value trap and no anchor here detects it.
+- **Yahoo data is free and imperfect.** `info["freeCashflow"]` disagreed with Microsoft's
+  own filed cash flow statement by 4x, which is why the annual statement is preferred and
+  the summary field is only a fallback.
+- Everything assumes the listing currency; no FX normalisation across a mixed watchlist.
+
+## Caching
+
+Two tiers, because quotes move every minute and annual statements move four times a
+year: quotes 1h, statements 7 days, in `cache/`. `--no-cache` bypasses both.
+
+## Tests
+
+```sh
+python3 -m unittest discover -s tests
+```
+
+No network. They pin the ways a screener produces a confident wrong number: growth
+invented from a negative base, Gordon growth dividing by a negative denominator, NaN
+sliding through the thresholds, and a large discount derived from contradictory anchors.
+
+## Your data stays out of this repo
+
+This repo is public; your positions are not. Gitignored: `watchlist.json`, any `*.csv`
+(portfolio exports carry cost basis), `portfolio*.json`, and `cache/` (fetched
+fundamentals for whatever you screened). Only `watchlist.example.json` is tracked.
+
+No credentials are ever read or stored. The optional Yahoo path reuses an existing
+Firefox session cookie; the CSV path needs no account access at all.
+
+## Not investment advice
+
+Mechanical output from free data and four openly-wrong models. Every number is an
+estimate with an error bar the screener cannot compute.

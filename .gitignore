@@ -1,0 +1,10 @@
+# Personal financial data. This repo is public: the code is shareable, the positions
+# are not. watchlist.example.json is the tracked template; watchlist.json is yours.
+watchlist.json
+*.csv
+portfolio*.json
+
+cache/
+__pycache__/
+*.pyc
+screen.log
