@@ -11,3 +11,5 @@ screen.log
 history.db
 screen_index.db/
 .venv/
+market_open.log
+state/

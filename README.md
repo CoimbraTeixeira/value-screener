@@ -269,6 +269,64 @@ dimension and metric match `congress-trades/search_common.py` deliberately, so t
 indexes on one machine share an embedding space. The dependencies are optional and
 imported lazily; the valuation models never touch them.
 
+## Daily Discord post at the opening bell
+
+`market_open_monitor.py` screens `watchlist.json` and posts to Discord when the New
+York market opens — only on days it actually opens.
+
+```sh
+./market_open_monitor.py --dry-run                        # print, don't post
+./market_open_monitor.py --force                          # post now, ignoring guards
+./market_open_monitor.py --now 2026-09-21T13:30:00+00:00 --dry-run   # simulate a bell
+```
+
+Crontab (installed):
+
+```
+*/15 13-15 * * 1-5 /usr/bin/python3 .../market_open_monitor.py >> .../market_open.log 2>&1
+```
+
+**Cron polls; the script decides.** A fixed local hour would be wrong for about four
+weeks a year: this machine runs Europe/Dublin, the exchange runs America/New_York, and
+they switch daylight saving on different dates. The bell is 14:30 Dublin most of the
+year but 13:30 between the US and EU switchover dates, so cron covers both hours and
+`market_clock` resolves the real one through `zoneinfo`.
+
+Three guards stop a polling schedule becoming a spamming one:
+
+- **Trading day.** Weekends and the full NYSE holiday calendar, computed rather than
+  fetched — including Good Friday (Easter-derived) and weekend observance, so 4 July
+  2026 closes on Friday the 3rd. Posting "market open" on Thanksgiving teaches you to
+  ignore the notification.
+- **Opening window.** Within 45 minutes *after* the bell, never before — firing early
+  would report yesterday's close as today's price.
+- **Once per session.** A state file records the exchange date posted, so the other
+  cron ticks are no-ops. A `flock` makes an overrunning run skip rather than double-post.
+
+The message leads with **what changed** — verdict crossings since the last recorded run
+— then what is currently below fair value. A list of verdicts is the same most mornings
+and gets skimmed into invisibility; a crossing is the reason to open the notification.
+
+```
+**Market open** - 2026-09-21 - 33 screened
+
+__Changed since last run__
+- **EQT** FAIR -> WATCH (wider on a -11% price fall)
+
+__Below estimated fair value__
+- **NOVO-B.CO** 281.55 vs 489.06 est. (42%) WATCH - analysts span 90% of price
+- **OTEX** 22.58 vs 34.45 est. (34%) WATCH - estimates falling (3 down vs 0 up in 30d)
+
+_6 failing quality gates: CL, IEP, INTC, IONQ, PEP, QUBT_
+```
+
+Webhook is read from `~/.config/fare-monitor/config.json`, shared with the other
+monitors on this machine. `--now` exists because a time-gated job that can only be
+exercised at 14:30 on a weekday is a job whose scheduling fails silently.
+
+Note the calendar is the **NYSE** one. A non-US holding like `NOVO-B.CO` is screened on
+New York's schedule, not Copenhagen's.
+
 ## Caching
 
 Three tiers, matching how fast each kind of data actually moves: quotes 1h, analyst
