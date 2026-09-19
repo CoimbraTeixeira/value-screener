@@ -198,6 +198,40 @@ sensitive to, so it is a flag rather than a buried constant.
   the summary field is only a fallback.
 - Everything assumes the listing currency; no FX normalisation across a mixed watchlist.
 
+
+## Tracking changes over time
+
+A single screen says "is this cheap now". Most of what matters is the derivative: what
+crossed into `BUY` this week, and whether a discount widened because the price fell or
+because the estimate rose. Those call for opposite reactions and look identical in the
+margin alone.
+
+```sh
+./value_screener.py --record      # store this run
+./value_screener.py --changes     # what moved since each ticker's last recorded run
+./value_screener.py --trend EQT   # one ticker's timeline
+```
+
+```
+SINCE LAST RUN
+  EQT        FAIR -> WATCH   wider on a -11% price fall
+  DIS        BUY -> WATCH    narrower on a 47% price rise
+```
+
+Verdict crossings are always listed; margin drift only above 5%, so a quote wobble is
+not reported as news. Comparison is per ticker against *its own* last reading, not
+against one global previous run — watchlists get edited, and a symbol screened a month
+ago should still be comparable rather than silently dropped.
+
+Stored in `history.db` (SQLite, gitignored — it records what you screen).
+
+**Why not the vector database?** Every question here is exact: one ticker on one date,
+margins above a threshold, the row before this one. Those are key lookups, range scans
+and ordering. Approximate nearest-neighbour search answers none of them, and embedding
+a row of floats to retrieve it by similarity would be slower, lossier and dependent on
+a model. Vectors earn their place when the question is "what else is like this" — a
+question about business descriptions, not prices.
+
 ## Caching
 
 Three tiers, matching how fast each kind of data actually moves: quotes 1h, analyst

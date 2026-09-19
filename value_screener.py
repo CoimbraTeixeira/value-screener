@@ -16,8 +16,10 @@ filter and is worth reading the filings for", nothing more.
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
+import history
 import portfolio
 import valuation
 from market_data import (FORWARD_TTL_SECONDS, QUOTE_TTL_SECONDS,
@@ -186,6 +188,64 @@ def format_positions(results: list[valuation.Assessment],
     return "\n".join(lines)
 
 
+def format_changes(results: list[valuation.Assessment], record_run: bool) -> str:
+    """What moved since each ticker's last recorded run.
+
+    Verdict crossings are listed first and unconditionally; they are the reason to run
+    a screen on a schedule at all. Margin drift is reported only when it is large enough
+    to be a change rather than a quote wobble.
+    """
+    connection = history.connect()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    moved = history.changes(connection, results, before=now)
+    runs = history.run_count(connection)
+
+    if record_run:
+        history.record(connection, results, run_at=now)
+
+    if not moved:
+        connection.close()
+        if runs == 0:
+            return ("\nNo history yet. Re-run with --record to store this screen; "
+                    "the next run will report what moved.")
+        return "\nNothing recorded previously for these tickers."
+
+    crossings = [c for c in moved if c.verdict_changed]
+    drifted = [c for c in moved if not c.verdict_changed
+               and c.margin_move is not None and abs(c.margin_move) >= 0.05]
+    connection.close()
+
+    if not crossings and not drifted:
+        return f"\nNo material change against {len(moved)} previously recorded."
+
+    lines = ["", "SINCE LAST RUN"]
+    for c in sorted(crossings, key=lambda x: -(x.margin_to or -9)):
+        lines.append(f"  {c.ticker:<10} {c.verdict_from} -> {c.verdict_to}"
+                     f"   {c.describe()}")
+    for c in sorted(drifted, key=lambda x: -abs(x.margin_move)):
+        lines.append(f"  {c.ticker:<10} margin {c.margin_from:+.0%} -> {c.margin_to:+.0%}"
+                     f"   {c.describe()}")
+    return "\n".join(lines)
+
+
+def format_trend(ticker: str) -> str:
+    """One ticker's recorded timeline."""
+    connection = history.connect()
+    rows = history.trend(connection, ticker)
+    connection.close()
+    if not rows:
+        return f"No recorded history for {ticker.upper()}. Run with --record first."
+
+    lines = [f"{ticker.upper()} - {len(rows)} recorded run(s)",
+             f"  {'WHEN':<20} {'PRICE':>10} {'FAIR EST':>10} {'MARGIN':>7}  VERDICT"]
+    for row in rows:
+        fair = f"{row['fair_value']:>10,.2f}" if row["fair_value"] else f"{'--':>10}"
+        margin = f"{row['margin']:>7.0%}" if row["margin"] is not None else f"{'--':>7}"
+        lines.append(f"  {row['run_at'][:19]:<20} {row['price']:>10,.2f} {fair} {margin}"
+                     f"  {row['verdict']}")
+    return "\n".join(lines)
+
+
 def notify(message: str) -> None:
     import requests
 
@@ -224,6 +284,12 @@ def main() -> None:
     parser.add_argument("--no-forward", action="store_true",
                         help="Ignore analyst estimates, revisions and share-count trend; "
                              "value on reported history alone")
+    parser.add_argument("--record", action="store_true",
+                        help="Store this run in history.db for later comparison")
+    parser.add_argument("--changes", action="store_true",
+                        help="Show what moved since each ticker's last recorded run")
+    parser.add_argument("--trend", metavar="TICKER",
+                        help="Print one ticker's recorded history and exit")
     parser.add_argument("--portfolio", metavar="CSV",
                         help="Screen a Yahoo Finance portfolio/watchlist export instead "
                              "of watchlist.json")
@@ -238,6 +304,10 @@ def main() -> None:
         ok, message = portfolio.session_status()
         print(("OK   " if ok else "NONE ") + message)
         sys.exit(0 if ok else 1)
+
+    if args.trend:
+        print(format_trend(args.trend))
+        sys.exit(0)
 
     holdings = load_holdings(args)
     tickers = ([t.upper() for t in args.tickers]
@@ -292,6 +362,8 @@ def main() -> None:
             print(format_row(r))
         if any(h.is_position for h in holdings):
             print(format_positions(results, holdings, screened))
+        if args.changes or args.record:
+            print(format_changes(screened, record_run=args.record))
 
     for failure in failures:
         print(f" ! {failure}", file=sys.stderr)
