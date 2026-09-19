@@ -204,6 +204,25 @@ class Gates(unittest.TestCase):
         self.assertEqual(valuation.check_gates(healthy(debt_to_equity=199.0)), [])
         self.assertEqual(len(valuation.check_gates(healthy(debt_to_equity=201.0))), 1)
 
+    def test_banks_and_reits_are_not_condemned_for_negative_cash_flow(self):
+        """Equinix builds data centres and JPMorgan lends money, so both report negative
+        free cash flow and high leverage through entirely healthy decades. Applying
+        those two gates there produced confident false negatives on whole sectors."""
+        for sector in ("Financial Services", "Real Estate"):
+            wrongly_condemned = healthy(sector=sector, free_cash_flow=-5.0e9,
+                                        debt_to_equity=400.0)
+            self.assertEqual(valuation.check_gates(wrongly_condemned), [], sector)
+
+    def test_exempt_sectors_are_still_judged_on_profitability(self):
+        """The exemption is narrow: a bank that has stopped earning is still AVOID."""
+        failures = valuation.check_gates(
+            healthy(sector="Financial Services", eps_trailing=-2.0))
+        self.assertTrue(any("unprofitable" in f for f in failures))
+
+    def test_ordinary_sectors_keep_the_cash_flow_gate(self):
+        failures = valuation.check_gates(healthy(sector="Technology", free_cash_flow=-1.0))
+        self.assertTrue(any("burning cash" in f for f in failures))
+
     def test_condemned_company_with_no_anchors_says_avoid_not_no_data(self):
         """Intel screened as NO DATA while unprofitable and cash-burning -- the facts that
         removed the anchors were themselves the verdict."""

@@ -184,8 +184,9 @@ sensitive to, so it is a flag rather than a buried constant.
 - **Trailing EPS is TTM**, so a one-off writedown flips a healthy company to `AVOID`.
   Gilead screens as unprofitable on a single impairment charge. Read the `--explain`
   output before believing a verdict.
-- **Banks and insurers** get no DCF — free cash flow is not meaningful for them, so they
-  are valued on three anchors at most.
+- **Banks and REITs** get no DCF — free cash flow is not meaningful when lending is an
+  investing outflow or the business is capital expenditure. The cash-flow and leverage
+  gates are suspended for those two sectors; the profitability gate still applies.
 - **Cyclicals** look cheapest at the top of their cycle, when trailing earnings peak.
   Falling estimates now veto a `BUY`, which catches the case where analysts have already
   noticed. It will not catch a cycle turning that nobody has forecast yet.

@@ -84,6 +84,13 @@ EARNINGS_SOON_DAYS = 7
 # a position change worth reading anything into.
 MATERIAL_INSIDER_SALE = 0.005
 
+# Sectors where free cash flow and balance-sheet leverage do not mean what they mean
+# elsewhere. A bank's lending is an investing outflow and its deposits are liabilities;
+# a REIT's whole business is buying buildings with mortgages. Both report negative FCF
+# and high leverage while entirely healthy, so those two gates are suspended here rather
+# than condemning the sectors wholesale.
+FCF_EXEMPT_SECTORS = frozenset({"Financial Services", "Real Estate"})
+
 
 @dataclass
 class Fundamentals:
@@ -432,13 +439,25 @@ def check_gates(f: Fundamentals, max_debt_to_equity: float = MAX_DEBT_TO_EQUITY,
     A missing field is not treated as a failure. Absent data is a gap in the feed, not
     evidence of a bad business, and failing on it would quietly blacklist every company
     whose filings the provider parses poorly.
+
+    Two gates are suspended by sector rather than applied everywhere. Free cash flow is
+    not a meaningful concept for a bank, whose lending shows up as investing outflow, or
+    for a REIT, whose entire business is capital expenditure -- Equinix builds data
+    centres and so reports negative FCF every year of a perfectly sound decade. Balance
+    sheet leverage is likewise normal for both: a bank's deposits and a REIT's mortgages
+    are the business model, not distress. Applying either gate there produces confident
+    false negatives on whole sectors.
     """
     failures = []
+    cash_flow_exempt = f.sector in FCF_EXEMPT_SECTORS
+
     if f.eps_trailing is not None and f.eps_trailing <= 0:
         failures.append("unprofitable (negative trailing EPS)")
-    if f.free_cash_flow is not None and f.free_cash_flow <= 0:
+    if (not cash_flow_exempt and f.free_cash_flow is not None
+            and f.free_cash_flow <= 0):
         failures.append("burning cash (negative free cash flow)")
-    if f.debt_to_equity is not None and f.debt_to_equity > max_debt_to_equity:
+    if (not cash_flow_exempt and f.debt_to_equity is not None
+            and f.debt_to_equity > max_debt_to_equity):
         failures.append(f"leverage {f.debt_to_equity / 100:.1f}x equity "
                         f"(limit {max_debt_to_equity / 100:.1f}x)")
     if f.return_on_equity is not None and f.return_on_equity < min_roe:
