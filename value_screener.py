@@ -246,6 +246,72 @@ def format_trend(ticker: str) -> str:
     return "\n".join(lines)
 
 
+def index_results(results: list[valuation.Assessment]) -> str:
+    """Store screened companies in the semantic index.
+
+    Funds are excluded: an ETF's description is about a strategy rather than a business,
+    so embedding it would return a tracker whenever someone searched for the industry it
+    tracks.
+    """
+    import vector_index
+
+    indexable = [r for r in results
+                 if r.business_summary and r.verdict != valuation.NO_DATA]
+    try:
+        stored = vector_index.upsert(
+            indexable, {r.ticker: r.business_summary for r in indexable})
+    except vector_index.VectorIndexUnavailable as exc:
+        return f"\nSemantic index unavailable: {exc}"
+    skipped = len(results) - stored
+    return (f"\nIndexed {stored} companies"
+            + (f" ({skipped} skipped: no business description or not a company)"
+               if skipped else "") + ".")
+
+
+def format_neighbours(found, heading: str, show_similarity: bool = True) -> str:
+    """Neighbour rows, showing each one's last verdict beside the similarity.
+
+    The verdict is the point: knowing what resembles a company is trivia unless it comes
+    with whether those companies screen well.
+
+    The similarity column is dropped for a plain listing, where every row would read
+    0.00 -- a column of zeroes invites the reader to interpret it.
+    """
+    if not found:
+        return f"{heading}\n  nothing indexed yet -- run a screen with --index first."
+    similarity_header = f"{'SIM':>5}  " if show_similarity else ""
+    lines = [heading,
+             f"  {'TICKER':<10} {similarity_header}{'PRICE':>10} {'MARGIN':>7}  "
+             f"{'VERDICT':<10} NAME"]
+    for n in found:
+        margin = f"{n.margin:>7.0%}" if n.margin > -90 else f"{'--':>7}"
+        similarity = f"{n.similarity:>5.2f}  " if show_similarity else ""
+        lines.append(f"  {n.ticker:<10} {similarity}{n.price:>10,.2f} {margin}"
+                     f"  {n.verdict:<10} {n.name[:32]}")
+    return "\n".join(lines)
+
+
+def run_vector_query(args) -> str:
+    """Handle --similar / --find / --indexed."""
+    import vector_index
+
+    try:
+        if args.similar:
+            found = vector_index.similar(args.similar)
+            return format_neighbours(found, f"Businesses most like {args.similar.upper()}:")
+        if args.find:
+            found = vector_index.search(args.find)
+            return format_neighbours(found, f'Indexed companies matching "{args.find}":')
+        return format_neighbours(vector_index.stored(), "Indexed companies:",
+                                 show_similarity=False)
+    except vector_index.VectorIndexUnavailable as exc:
+        return f"Semantic index unavailable: {exc}"
+    except LookupError as exc:
+        return str(exc)
+
+
+
+
 def notify(message: str) -> None:
     import requests
 
@@ -290,6 +356,16 @@ def main() -> None:
                         help="Show what moved since each ticker's last recorded run")
     parser.add_argument("--trend", metavar="TICKER",
                         help="Print one ticker's recorded history and exit")
+    parser.add_argument("--index", action="store_true",
+                        help="Store each screened company and its verdict in the "
+                             "semantic index (screen_index.db)")
+    parser.add_argument("--similar", metavar="TICKER",
+                        help="Find indexed companies whose business resembles this one")
+    parser.add_argument("--find", metavar="TEXT",
+                        help="Find indexed companies matching a plain-language "
+                             'description, e.g. --find "power semiconductors"')
+    parser.add_argument("--indexed", action="store_true",
+                        help="List everything currently in the semantic index")
     parser.add_argument("--portfolio", metavar="CSV",
                         help="Screen a Yahoo Finance portfolio/watchlist export instead "
                              "of watchlist.json")
@@ -307,6 +383,10 @@ def main() -> None:
 
     if args.trend:
         print(format_trend(args.trend))
+        sys.exit(0)
+
+    if args.similar or args.find or args.indexed:
+        print(run_vector_query(args))
         sys.exit(0)
 
     holdings = load_holdings(args)
@@ -364,6 +444,8 @@ def main() -> None:
             print(format_positions(results, holdings, screened))
         if args.changes or args.record:
             print(format_changes(screened, record_run=args.record))
+        if args.index:
+            print(index_results(screened))
 
     for failure in failures:
         print(f" ! {failure}", file=sys.stderr)

@@ -9,3 +9,5 @@ __pycache__/
 *.pyc
 screen.log
 history.db
+screen_index.db/
+.venv/

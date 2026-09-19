@@ -107,6 +107,9 @@ class Fundamentals:
     quote_type: str = "EQUITY"
     name: str = ""
     sector: str = ""
+    # Plain-language description of the business. Carried for the semantic index, which
+    # embeds what a company does; no valuation model reads it.
+    business_summary: str = ""
 
     eps_trailing: float | None = None
     book_value_per_share: float | None = None
@@ -426,6 +429,10 @@ class Assessment:
     # Forward-looking warnings. Distinct from gate_failures: a gate says the business is
     # broken today, a flag says the estimate ahead of it is not to be leaned on.
     flags: list[str] = field(default_factory=list)
+    # Carried through from the fundamentals purely so the semantic index can embed the
+    # description alongside the verdict without refetching.
+    sector: str = ""
+    business_summary: str = ""
 
     @property
     def usable_anchors(self) -> list[Anchor]:
@@ -571,7 +578,7 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
         return Assessment(f.ticker, f.name, f.price, f.currency, NO_DATA, None, None,
                           anchors, gate_failures,
                           [f"{f.quote_type} is not a single company; these models do not apply"],
-                          f.analyst_target, flags)
+                          f.analyst_target, flags, f.sector, f.business_summary)
 
     usable = [a for a in anchors if a.value is not None]
     if len(usable) < 2:
@@ -582,7 +589,7 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
                           AVOID if gate_failures else NO_DATA, None, None,
                           anchors, gate_failures,
                           ["fewer than two anchors could be computed"], f.analyst_target,
-                          flags)
+                          flags, f.sector, f.business_summary)
 
     fair_value = median(a.value for a in usable)
     margin = (fair_value - f.price) / fair_value if fair_value > 0 else None
@@ -618,4 +625,5 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
             notes.append(f"analyst target {f.analyst_target:,.2f} is {gap:.1f}x this estimate")
 
     return Assessment(f.ticker, f.name, f.price, f.currency, verdict, fair_value, margin,
-                      anchors, gate_failures, notes, f.analyst_target, flags)
+                      anchors, gate_failures, notes, f.analyst_target, flags,
+                      f.sector, f.business_summary)

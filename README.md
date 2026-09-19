@@ -225,12 +225,49 @@ ago should still be comparable rather than silently dropped.
 
 Stored in `history.db` (SQLite, gitignored — it records what you screen).
 
-**Why not the vector database?** Every question here is exact: one ticker on one date,
-margins above a threshold, the row before this one. Those are key lookups, range scans
-and ordering. Approximate nearest-neighbour search answers none of them, and embedding
-a row of floats to retrieve it by similarity would be slower, lossier and dependent on
-a model. Vectors earn their place when the question is "what else is like this" — a
-question about business descriptions, not prices.
+**Why SQLite and not the vector store?** Every question here is exact: one ticker on
+one date, margins above a threshold, the row before this one. Those are key lookups,
+range scans and ordering. Approximate nearest-neighbour search answers none of them,
+and embedding a row of floats to retrieve it by similarity would be slower, lossier and
+dependent on a model. Vectors answer a different question — see below.
+
+## Semantic index (optional)
+
+The question a vector store *does* answer is "what else is like this", so what gets
+embedded is the company's **business description**, never its numbers. The last verdict
+rides along as metadata, which is the useful combination: find businesses similar to
+one that screens well, and see immediately whether they screen well too.
+
+```sh
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements-vector.txt
+
+./value_screener.py --portfolio list.csv --index   # screen and index
+./value_screener.py --similar NVDA                 # businesses like this one
+./value_screener.py --find "power semiconductors"  # plain-language search
+./value_screener.py --indexed                      # everything stored
+```
+
+```
+Businesses most like NVDA:
+  TICKER       SIM       PRICE  MARGIN  VERDICT    NAME
+  INTC        0.79      108.60      --  AVOID      Intel Corporation
+  AMD         0.75      559.82   -529%  EXPENSIVE  Advanced Micro Devices, Inc.
+  OTEX        0.67       22.58     34%  WATCH      Open Text Corporation
+```
+
+Searching *"semiconductor manufacturing equipment"* returns AMAT and ASML because of
+what they do, not because a sector string matched. This is the direct answer to a screen
+that finds nothing: widen the universe rather than lower the threshold.
+
+Companies with no business description are skipped rather than embedded from their
+ticker symbol, and funds are skipped too — an ETF's blurb describes a strategy, so
+indexing it would return a tracker whenever you searched for the industry it tracks.
+
+Stored in `screen_index.db` (Milvus Lite, embedded, no server — gitignored). Model,
+dimension and metric match `congress-trades/search_common.py` deliberately, so two
+indexes on one machine share an embedding space. The dependencies are optional and
+imported lazily; the valuation models never touch them.
 
 ## Caching
 

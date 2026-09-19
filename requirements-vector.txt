@@ -1,0 +1,12 @@
+# Optional: the semantic index (--index, --similar, --find, --indexed).
+# Heavier than the screener itself, since it pulls a CPU build of torch, so it is kept
+# separate -- the valuation models never touch it and work fine without it.
+#
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-vector.txt
+#
+# On Debian/Ubuntu with an externally managed Python (PEP 668), add
+# --break-system-packages, or install into a virtualenv.
+
+pymilvus[milvus_lite]>=3.0     # embedded Milvus Lite vector store, no server
+sentence-transformers>=3.0     # BAAI/bge-small-en-v1.5 embeddings

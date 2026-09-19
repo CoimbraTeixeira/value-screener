@@ -275,7 +275,7 @@ def fetch(ticker: str, *, quote_ttl: float = QUOTE_TTL_SECONDS,
         info = handle.info or {}
         quote = {k: info.get(k) for k in (
             "currentPrice", "regularMarketPrice", "previousClose", "shortName", "longName",
-            "currency", "quoteType", "sector", "trailingEps", "bookValue",
+            "currency", "quoteType", "sector", "longBusinessSummary", "trailingEps", "bookValue",
             "freeCashflow", "sharesOutstanding", "totalCash", "totalDebt", "beta",
             "dividendRate", "payoutRatio", "returnOnEquity", "debtToEquity",
             "earningsGrowth", "targetMeanPrice", "targetHighPrice", "targetLowPrice")}
@@ -326,6 +326,7 @@ def fetch(ticker: str, *, quote_ttl: float = QUOTE_TTL_SECONDS,
         quote_type=quote.get("quoteType") or "EQUITY",
         name=quote.get("shortName") or quote.get("longName") or symbol,
         sector=quote.get("sector") or "",
+        business_summary=quote.get("longBusinessSummary") or "",
         eps_trailing=_number(quote.get("trailingEps")),
         book_value_per_share=_number(quote.get("bookValue")),
         free_cash_flow=free_cash_flow,
