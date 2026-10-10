@@ -15,6 +15,7 @@ filter and is worth reading the filings for", nothing more.
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,15 +25,31 @@ import portfolio
 import valuation
 from market_data import (FORWARD_TTL_SECONDS, QUOTE_TTL_SECONDS,
                          STATEMENT_TTL_SECONDS, fetch)
+from paths import DATA_DIR, REPO_DIR
 from valuation import assess
 
-REPO_DIR = Path(__file__).resolve().parent
 # The real watchlist is gitignored: this repo is public and a tracked watchlist would
 # publish which stocks its owner follows. A fresh clone falls back to the example so the
-# screener runs out of the box.
-WATCHLIST_PATH = REPO_DIR / "watchlist.json"
+# screener runs out of the box. The example is code, so it stays with the code; the real
+# list is data, so it follows VALUE_SCREENER_DATA_DIR.
+WATCHLIST_PATH = DATA_DIR / "watchlist.json"
 EXAMPLE_WATCHLIST_PATH = REPO_DIR / "watchlist.example.json"
-CONFIG_PATH = Path.home() / ".config" / "fare-monitor" / "config.json"  # shared with the other monitors
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "fare-monitor" / "config.json"  # shared with the other monitors
+
+
+def resolve_config_path(environ=os.environ) -> Path:
+    """The webhook config: MONITOR_CONFIG if set, else the file shared with the other
+    monitors.
+
+    The override exists so a test harness can point the post at a local fake webhook
+    without editing the shared file every hourly job on this machine reads. An empty
+    value counts as unset rather than as a path to the current directory.
+    """
+    override = environ.get("MONITOR_CONFIG")
+    return Path(override).expanduser() if override else DEFAULT_CONFIG_PATH
+
+
+CONFIG_PATH = resolve_config_path()
 
 # Ordered worst-to-best so a sort by index puts the actionable rows last, where the eye
 # lands after reading a long table.

@@ -25,10 +25,10 @@ core screener stays importable and fast without them installed.
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 
-REPO_DIR = Path(__file__).resolve().parent
-INDEX_PATH = REPO_DIR / "screen_index.db"      # Milvus Lite store (a directory)
+from paths import DATA_DIR
+
+INDEX_PATH = DATA_DIR / "screen_index.db"      # Milvus Lite store (a directory)
 COLLECTION = "screened"
 
 # Same embedding space as the congress-trades index, so the two are comparable.
