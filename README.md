@@ -362,6 +362,28 @@ python3 -m unittest discover -s tests
 No network. They pin the ways a screener produces a confident wrong number: growth
 invented from a negative base, Gordon growth dividing by a negative denominator, NaN
 sliding through the thresholds, and a large discount derived from contradictory anchors.
+The four semantic-index tests skip unless `requirements-vector.txt` is installed.
+
+## CI and merging
+
+`master` is protected: a change lands only through a pull request, and only after the
+`check` job in `.github/workflows/ci.yml` passes. The rule applies to admins too, so
+nothing — a person or a coding agent — can push straight to `master`. The cron job runs
+from the local checkout and is unaffected.
+
+`check` runs three gates; the same commands work locally:
+
+```sh
+python3 hooks/pre-commit --all     # secret scan over every tracked file
+ruff check .                       # syntax errors + pyflakes; rules in ruff.toml
+python3 -m unittest discover -s tests
+```
+
+The secret scan runs in CI as well as locally because the local hook is opt-in per clone
+and `--no-verify` skips it; the CI copy is the one nothing can bypass. The lint rules are
+deliberately narrow — undefined names, unused imports, syntax errors — so the gate
+catches defects rather than demanding reformatting. CI installs only `requirements.txt`,
+so the semantic-index tests skip there.
 
 ## Your data stays out of this repo
 
@@ -369,8 +391,18 @@ This repo is public; your positions are not. Gitignored: `watchlist.json`, any `
 (portfolio exports carry cost basis), `portfolio*.json`, and `cache/` (fetched
 fundamentals for whatever you screened). Only `watchlist.example.json` is tracked.
 
-No credentials are ever read or stored. The optional Yahoo path reuses an existing
-Firefox session cookie; the CSV path needs no account access at all.
+No credentials are stored in the repo. The Discord webhook lives in
+`~/.config/fare-monitor/config.json`, shared with the sibling monitors, and
+`hooks/pre-commit` refuses a commit whose staged content holds a webhook URL, API token
+or private key. Git does not enable repo-tracked hooks automatically, so run this once
+per clone (bypass a false positive with `git commit --no-verify`):
+
+```sh
+git config core.hooksPath hooks
+```
+
+The optional Yahoo path reuses an existing Firefox session cookie; the CSV path needs no
+account access at all.
 
 ## Not investment advice
 

@@ -17,7 +17,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import history  # noqa: E402
 import valuation  # noqa: E402
 from history import Change, changes, connect, previous_run, record, run_count, trend  # noqa: E402
 from valuation import assess  # noqa: E402

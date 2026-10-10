@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import portfolio  # noqa: E402
 import valuation  # noqa: E402
 from portfolio import Holding, load_csv, review  # noqa: E402
-from valuation import Fundamentals, assess  # noqa: E402
+from valuation import assess  # noqa: E402
 
 from test_valuation import agreeing, healthy  # noqa: E402
 
