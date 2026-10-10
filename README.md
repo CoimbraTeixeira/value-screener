@@ -165,6 +165,11 @@ The sell threshold (25%) is deliberately wider than the buy threshold, because
 declining to buy is free while selling costs spread and tax. **Tax is not modelled** —
 a `TRIM` on a long-held position may well be wrong after capital gains.
 
+`--only` filters the screening table, not this one: every position is listed whatever
+its verdict, so the rows always add up to `TOTAL`. The closing `N screened` line also
+counts the whole screen, and says how many rows `--only` left visible
+(`30 screened (4 shown): ...`).
+
 ## Tuning
 
 Defaults are conservative on purpose. The discount rate is the input a DCF is most

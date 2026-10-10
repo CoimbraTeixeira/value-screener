@@ -167,23 +167,24 @@ def load_holdings(args) -> list[portfolio.Holding]:
 
 
 def format_positions(results: list[valuation.Assessment],
-                     holdings: list[portfolio.Holding],
-                     all_results: list[valuation.Assessment] | None = None) -> str:
+                     holdings: list[portfolio.Holding]) -> str:
     """The holder's view: what to do with what is already owned.
 
     Printed as a second table rather than extra columns on the first, because the buy
     question and the hold question have different answers for the same stock -- a
     position can be simultaneously EXPENSIVE (do not buy more) and worth holding.
+
+    `results` must be the whole screen, not the rows that survived --only: the verdict
+    filter is a question about what to buy, and every position held still needs an
+    answer and still counts towards the weights.
     """
     by_ticker = {r.ticker: r for r in results}
     owned = [h for h in holdings if h.is_position and h.ticker in by_ticker]
     if not owned:
         return ""
 
-    # Weights are a share of every position held, not of the rows that survived --only.
-    priced = {r.ticker: r for r in (all_results or results)}
-    total = sum(priced[h.ticker].price * h.quantity
-                for h in holdings if h.is_position and h.ticker in priced)
+    total = sum(by_ticker[h.ticker].price * h.quantity
+                for h in holdings if h.is_position and h.ticker in by_ticker)
     reviews = [portfolio.review(by_ticker[h.ticker], h, total) for h in owned]
     order = {portfolio.EXIT: 0, portfolio.TRIM: 1, portfolio.HOLD: 2, portfolio.ADD: 3}
     reviews.sort(key=lambda r: (order[r.action], -(r.market_value or 0)))
@@ -465,8 +466,9 @@ def main() -> None:
             buy_margin=args.buy_margin,
         ))
 
-    # Position weights must be a share of the whole portfolio, so --only filters the
-    # screening table without shrinking the denominator underneath the holdings table.
+    # --only answers "what should I look at buying", so it filters the screening table
+    # alone. The holdings table, change report, index and footer keep the full screen:
+    # a held position does not stop needing an answer because its verdict was filtered.
     screened = results
     wanted = {v.strip().upper() for v in args.only.split(",") if v.strip()}
     if wanted:
@@ -490,7 +492,7 @@ def main() -> None:
         for r in results:
             print(format_row(r))
         if any(h.is_position for h in holdings):
-            print(format_positions(results, holdings, screened))
+            print(format_positions(screened, holdings))
         if args.changes or args.record:
             print(format_changes(screened, record_run=args.record))
         if args.index:
@@ -500,8 +502,9 @@ def main() -> None:
         print(f" ! {failure}", file=sys.stderr)
 
     if not args.as_json:
-        counts = {v: sum(1 for r in results if r.verdict == v) for v in VERDICT_ORDER}
-        print(f"\n{len(results)} screened: "
+        counts = {v: sum(1 for r in screened if r.verdict == v) for v in VERDICT_ORDER}
+        shown = f" ({len(results)} shown)" if wanted else ""
+        print(f"\n{len(screened)} screened{shown}: "
               + ", ".join(f"{n} {v.lower()}" for v, n in counts.items() if n))
         print("Fair values are estimates from disagreeing models, not price targets.")
 

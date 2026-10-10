@@ -10,15 +10,19 @@ that has started losing money is an EXIT, and the gain is exactly what makes tha
 to see.
 """
 
+import contextlib
+import io
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import portfolio  # noqa: E402
 import valuation  # noqa: E402
+import value_screener  # noqa: E402
 from portfolio import Holding, load_csv, review  # noqa: E402
 from valuation import assess  # noqa: E402
 
@@ -166,6 +170,55 @@ class SessionDetection(unittest.TestCase):
         portfolio._walk_for_holdings(
             {"symbol": "some-internal-identifier-value"}, found)
         self.assertEqual(found, {})
+
+
+class OnlyFilter(unittest.TestCase):
+    """--only narrows the buy-side table. It must not narrow the holder's view: a
+    position whose verdict was filtered out is still owned, still needs an action, and
+    is still part of the TOTAL its neighbours' weights are measured against."""
+
+    def run_screener(self, *flags: str) -> tuple[list[str], list[str]]:
+        """Run the real main() on a two-position portfolio, one BUY and one EXPENSIVE.
+
+        Returns the output split at the HOLDINGS header: (screening, holdings).
+        """
+        expensive_price = assess(healthy()).fair_value * 2
+        fixtures = {"AAA": agreeing(ticker="AAA"),
+                    "BBB": healthy(ticker="BBB", price=expensive_price)}
+        csv_path = write_csv("Symbol,Purchase Price,Quantity\n"
+                             "AAA,30.00,10\n"
+                             "BBB,90.00,10\n")
+        out = io.StringIO()
+        with mock.patch.object(value_screener, "fetch",
+                               side_effect=lambda ticker, **_: fixtures[ticker]), \
+                mock.patch.object(sys, "argv", ["value_screener.py", "--portfolio",
+                                                str(csv_path), *flags]), \
+                contextlib.redirect_stdout(out):
+            value_screener.main()
+        lines = out.getvalue().splitlines()
+        split = next(i for i, line in enumerate(lines) if line.startswith("HOLDINGS"))
+        return lines[:split], lines[split:]
+
+    def test_a_filtered_out_position_stays_in_the_holdings_table(self):
+        _, holdings = self.run_screener("--only", "BUY")
+        values = {line.split()[0]: float(line.split()[1].replace(",", ""))
+                  for line in holdings[1:] if line.split()[:1] in (["AAA"], ["BBB"], ["TOTAL"])}
+        self.assertEqual(sorted(values), ["AAA", "BBB", "TOTAL"])
+        # Every position counted in TOTAL is listed above it.
+        self.assertAlmostEqual(values["AAA"] + values["BBB"], values["TOTAL"], delta=1)
+
+    def test_the_screening_table_is_still_filtered(self):
+        screening, _ = self.run_screener("--only", "BUY")
+        self.assertTrue(any("AAA" in line for line in screening))
+        self.assertFalse(any("BBB" in line for line in screening))
+
+    def test_footer_counts_the_whole_screen_and_says_how_many_are_shown(self):
+        _, rest = self.run_screener("--only", "BUY")
+        self.assertIn("2 screened (1 shown): 1 expensive, 1 buy", rest)
+
+    def test_footer_omits_the_shown_count_when_nothing_is_filtered(self):
+        _, rest = self.run_screener()
+        self.assertIn("2 screened: 1 expensive, 1 buy", rest)
 
 
 if __name__ == "__main__":
