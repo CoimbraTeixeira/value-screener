@@ -323,6 +323,9 @@ means a discount failed a confidence check, not a buy recommendation. Candidates
 already pass the existing BUY/WATCH filters; the list can contain fewer than 10 or be
 absent when no qualifying dividend payers were found.
 
+The shortlist follows the recommendation groups and preserves each candidate's `BUY` or
+`WATCH` label and reason, so a high yield does not override a failed valuation check.
+
 **`SELL` does not mean "close your position".** A Yahoo watchlist export carries no
 quantity and no cost basis, so nothing here knows you hold it, what you paid, or what
 the tax would be. It means *not worth owning at this price*. For real holdings, the
@@ -335,26 +338,6 @@ because the estimate's own error bar is wider than a ten-percent gap.
 Crossings lead because a verdict list is identical most mornings and gets skimmed into
 invisibility; a change is the reason to open the notification.
 
-```
-**Market open** - 2026-09-21 - 33 screened
-
-__Changed since last run__
-- **EQT** FAIR -> WATCH (wider on a -11% price fall)
-
-__HOLD (8)__
-`NOVO-B.CO`    281.55 - anchors disagree 5.4x -- estimate is weak
-`EQT      `     50.00 - estimates falling (8 down vs 0 up in 30d)
-`KO       `     88.25 - -15% vs estimate
-
-__SELL / would not own (23)__
-`PEP      `    129.75 - leverage 2.4x equity (limit 2.0x)
-`INTC     `    108.60 - unprofitable (negative trailing EPS) (+2 more)
-`NVDA     `    222.27 - 48% above estimate
-`TSLA     `    364.27 - 1203% above estimate
-
-__No call (2)__
-`QQQ      `    721.45 - these models do not apply
-```
 
 Webhook is read from `~/.config/fare-monitor/config.json`, shared with the other
 monitors on this machine. `--now` exists because a time-gated job that can only be
