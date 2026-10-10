@@ -20,8 +20,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO_DIR = Path(__file__).resolve().parent
-HISTORY_PATH = REPO_DIR / "history.db"
+from paths import DATA_DIR
+
+HISTORY_PATH = DATA_DIR / "history.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (

@@ -22,17 +22,16 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
 import history
 import market_clock
 import valuation
 from market_data import fetch
+from paths import DATA_DIR
 from valuation import assess
 from value_screener import WATCHLIST_PATH, load_watchlist, notify
 
-REPO_DIR = Path(__file__).resolve().parent
-STATE_DIR = REPO_DIR / "state"
+STATE_DIR = DATA_DIR / "state"
 STATE_PATH = STATE_DIR / "market_open_posted.json"
 LOCK_PATH = STATE_DIR / "market_open.lock"
 

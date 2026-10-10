@@ -353,6 +353,31 @@ estimates 24h, annual statements 7 days, all in `cache/`. One TTL for all three 
 either serve stale prices or refetch five years of financials to learn a stock moved
 twelve cents. `--no-cache` bypasses all three.
 
+## Running against fakes
+
+Three opt-in environment variables let a test harness run the real scripts with no real
+side effects — no Yahoo traffic, no post to the real webhook, no write to the live cache,
+state or history that cron depends on. Unset, every one means exactly today's behaviour.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VALUE_SCREENER_DATA_DIR` | the repo | Base for `cache/`, `state/`, `history.db`, `watchlist.json` and `screen_index.db`. `watchlist.example.json` stays in the repo. |
+| `VALUE_SCREENER_OFFLINE=1` | off | `fetch` never touches yfinance: it replays the three cache files per ticker (`TICKER.quote/statements/forward.json`) whatever their age, and a missing one is a `no recorded data` error rather than a live fetch. |
+| `MONITOR_CONFIG` | `~/.config/fare-monitor/config.json` | Webhook config read by `--notify` and the market-open post. |
+
+A recording is just a kept `cache/` directory — the files are already in the format the
+live path writes, so they *are* the fake Yahoo. With a local fake webhook on port 8765:
+
+```sh
+mkdir -p /tmp/vs/cache && cp cache/KO.*.json /tmp/vs/cache/ && echo '["KO"]' > /tmp/vs/watchlist.json
+echo '{"webhook_url": "http://127.0.0.1:8765/api/webhooks/1/fake"}' > /tmp/vs/config.json
+VALUE_SCREENER_DATA_DIR=/tmp/vs VALUE_SCREENER_OFFLINE=1 MONITOR_CONFIG=/tmp/vs/config.json \
+  ./market_open_monitor.py --force --now 2026-09-21T13:35:00+00:00
+```
+
+`tests/test_seams.py` runs that same flow against a loopback webhook, and fails if offline
+mode ever constructs a `yf.Ticker`.
+
 ## Tests
 
 ```sh

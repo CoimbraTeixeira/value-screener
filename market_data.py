@@ -20,10 +20,10 @@ from pathlib import Path
 
 import yfinance as yf
 
+from paths import DATA_DIR
 from valuation import Forward, Fundamentals
 
-REPO_DIR = Path(__file__).resolve().parent
-CACHE_DIR = REPO_DIR / "cache"
+CACHE_DIR = DATA_DIR / "cache"
 
 QUOTE_TTL_SECONDS = 3600            # 1 hour
 FORWARD_TTL_SECONDS = 86400         # 1 day
@@ -37,6 +37,16 @@ FISCAL_PRICE_TOLERANCE_DAYS = 7
 # issuance policy: Apple's 2019 count reads 4.4bn against 17bn in 2020 purely because of
 # the 4:1 split, and treating that as 280% dilution would gut every DCF that spans it.
 MAX_PLAUSIBLE_SHARE_CHANGE = 0.35
+
+
+def offline() -> bool:
+    """True when VALUE_SCREENER_OFFLINE=1: serve recorded cache files, never Yahoo.
+
+    Read per call rather than at import so a harness (or a test) can flip it without
+    reloading the module. The recorded cache files *are* the fake Yahoo: same format the
+    live path writes, so a recording is just a cache directory someone kept.
+    """
+    return os.environ.get("VALUE_SCREENER_OFFLINE") == "1"
 
 
 def _cache_path(ticker: str, kind: str) -> Path:
@@ -61,6 +71,21 @@ def _write_cache(path: Path, payload: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, default=str))
     os.replace(tmp, path)
+
+
+def _read_recorded(path: Path, symbol: str) -> dict:
+    """A cache file in offline mode: any age is fine, absence is an error.
+
+    TTLs are ignored because a recording is meant to be replayed long after it was
+    made. A missing or unreadable file raises instead of falling back to the network --
+    the whole point of offline mode is that nothing reaches Yahoo, and a silent live
+    fetch would make a scenario test depend on today's prices.
+    """
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{symbol}: no recorded data at {path} (offline mode)") from exc
+
 
 
 def _number(value) -> float | None:
@@ -262,11 +287,20 @@ def fetch(ticker: str, *, quote_ttl: float = QUOTE_TTL_SECONDS,
     Raises ValueError when the ticker has no price at all, which is how a typo or a
     delisting shows up; every other missing field is left as None for the anchors to
     abstain on.
+
+    With VALUE_SCREENER_OFFLINE=1 the three cache files are the only source: TTLs are
+    ignored, yfinance is never touched, and a missing file raises ValueError.
     """
     symbol = ticker.upper().strip()
     quote_file = _cache_path(symbol, "quote")
     statement_file = _cache_path(symbol, "statements")
     forward_file = _cache_path(symbol, "forward")
+
+    if offline():
+        quote = _read_recorded(quote_file, symbol)
+        statements = _read_recorded(statement_file, symbol)
+        forward_payload = _read_recorded(forward_file, symbol) if with_forward else None
+        return _fundamentals(symbol, quote, statements, forward_payload)
 
     handle = None
     quote = _read_cache(quote_file, quote_ttl)
@@ -305,6 +339,12 @@ def fetch(ticker: str, *, quote_ttl: float = QUOTE_TTL_SECONDS,
             forward_payload["share_growth"] = _share_growth(handle)
             _write_cache(forward_file, forward_payload)
 
+    return _fundamentals(symbol, quote, statements, forward_payload)
+
+
+def _fundamentals(symbol: str, quote: dict, statements: dict,
+                  forward_payload: dict | None) -> Fundamentals:
+    """Normalise the three cached payloads into the model's input, however obtained."""
     price = (_number(quote.get("currentPrice")) or _number(quote.get("regularMarketPrice"))
              or _number(quote.get("previousClose")))
     if price is None or price <= 0:
