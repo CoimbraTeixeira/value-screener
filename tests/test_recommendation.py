@@ -73,15 +73,15 @@ class Mapping(unittest.TestCase):
         self.assertEqual(action, valuation.RECOMMEND_NONE)
         self.assertIn("do not apply", reason)
 
-    def test_a_blocked_buy_holds_and_says_why(self):
-        """A large discount undermined by falling estimates is a HOLD, and the reason
-        shown should be the blocker rather than the margin."""
+    def test_a_discount_blocked_from_buy_is_shown_as_watch(self):
+        """A cheap stock with a confidence blocker is a candidate, not a buy or a plain hold."""
         trap = agreeing(forward=valuation.Forward(revisions_up=0, revisions_down=8))
         result = assess(trap)
         self.assertEqual(result.verdict, valuation.WATCH)
         action, reason = recommendation(result)
-        self.assertEqual(action, valuation.RECOMMEND_HOLD)
+        self.assertEqual(action, valuation.RECOMMEND_WATCH)
         self.assertTrue(reason)
+
 
     def test_every_verdict_maps_to_something(self):
         """No verdict may fall through to an empty call."""
@@ -89,8 +89,9 @@ class Mapping(unittest.TestCase):
                  healthy(eps_trailing=-1.0, free_cash_flow=-1.0)]
         for fundamentals in cases:
             action, reason = recommendation(assess(fundamentals))
-            self.assertIn(action, {valuation.RECOMMEND_BUY, valuation.RECOMMEND_HOLD,
-                                   valuation.RECOMMEND_SELL, valuation.RECOMMEND_NONE})
+            self.assertIn(action, {valuation.RECOMMEND_BUY, valuation.RECOMMEND_WATCH,
+                                   valuation.RECOMMEND_HOLD, valuation.RECOMMEND_SELL,
+                                   valuation.RECOMMEND_NONE})
             self.assertTrue(reason)
 
 
@@ -140,6 +141,38 @@ class MessageShape(unittest.TestCase):
     def test_groups_are_counted(self):
         message = self.build([assess(agreeing())])
         self.assertIn("__BUY (1)__", message)
+    def test_blocked_buy_opportunities_have_a_separate_report_group(self):
+        trap = assess(agreeing(forward=valuation.Forward(revisions_up=0, revisions_down=8)))
+        message = self.build([trap])
+        self.assertIn("__WATCH / potential buy (1)__", message)
+        self.assertNotIn("__BUY (1)__", message)
+        self.assertIn("estimates falling", message)
+    def test_top_ten_dividend_opportunities_rank_by_yield(self):
+        candidates = [
+            assess(agreeing(ticker=f"DIV{i:02d}", dividend_rate=float(i),
+                            dividend_yield=i / 100))
+            for i in range(1, 13)
+        ]
+        message = self.build(candidates)
+        self.assertIn("__Top dividend-yield buy opportunities (10)__", message)
+        section = message.split("__Top dividend-yield buy opportunities (10)__\n", 1)[1]
+        section = section.split("\n_Ranked by dividend yield", 1)[0]
+        self.assertIn("DIV12", section)
+        self.assertIn("12.0% yield; USD 12.00/share annually", section)
+        self.assertLess(section.index("DIV12"), section.index("DIV11"))
+        self.assertNotIn("DIV02", section)
+        self.assertNotIn("DIV01", section)
+
+    def test_dividend_list_excludes_non_buy_and_non_watch_verdicts(self):
+        candidate = assess(agreeing(ticker="CAND", dividend_rate=2,
+                                    dividend_yield=0.05))
+        hold = assess(healthy(ticker="HOLD", price=1e6, dividend_rate=20,
+                              dividend_yield=0.20))
+        message = self.build([candidate, hold])
+        section = message.split("__Top dividend-yield buy opportunities (1)__\n", 1)[1]
+        self.assertIn("CAND", section)
+        self.assertIn("5.0% yield", section)
+        self.assertNotIn("HOLD", section)
 
     def test_the_sell_caveat_is_always_present(self):
         """Without a cost basis, SELL cannot mean 'close your position', and the message

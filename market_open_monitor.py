@@ -109,6 +109,7 @@ def build_message(results: list, changes: list, session: str,
                          f"{change.verdict_to} ({change.describe()})")
 
     for action, label in ((valuation.RECOMMEND_BUY, "BUY"),
+                          (valuation.RECOMMEND_WATCH, "WATCH / potential buy"),
                           (valuation.RECOMMEND_HOLD, "HOLD"),
                           (valuation.RECOMMEND_SELL, "SELL / would not own"),
                           (valuation.RECOMMEND_NONE, "No call")):
@@ -121,6 +122,27 @@ def build_message(results: list, changes: list, session: str,
         lines.append(f"__{label} ({len(group)})__")
         for result, reason in group:
             lines.append(f"`{result.ticker:<9}` {result.price:>9,.2f} - {reason}")
+    dividend_candidates = [
+        (result, action, reason)
+        for result, action, reason in graded
+        if action in (valuation.RECOMMEND_BUY, valuation.RECOMMEND_WATCH)
+        and result.dividend_yield is not None and result.dividend_yield > 0
+    ]
+    dividend_candidates.sort(
+        key=lambda item: (-item[0].dividend_yield,
+                          -(item[0].margin_of_safety or -9)))
+    if dividend_candidates:
+        top_dividend_candidates = dividend_candidates[:10]
+        lines.append("")
+        lines.append(f"__Top dividend-yield buy opportunities "
+                     f"({len(top_dividend_candidates)})__")
+        for result, action, reason in top_dividend_candidates:
+            annual = (f"; {result.currency} {result.dividend_rate:,.2f}/share annually"
+                      if result.dividend_rate is not None else "")
+            lines.append(f"`{result.ticker:<9}` {action} - "
+                         f"{result.dividend_yield:.1%} yield{annual} - {reason}")
+        lines.append("_Ranked by dividend yield; BUY/WATCH criteria still apply._")
+
 
     if failures:
         lines.append("")

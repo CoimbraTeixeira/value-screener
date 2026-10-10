@@ -304,16 +304,24 @@ Three guards stop a polling schedule becoming a spamming one:
   cron ticks are no-ops. A `flock` makes an overrunning run skip rather than double-post.
 
 The message leads with **what changed** — verdict crossings since the last recorded run
-— then gives a **BUY / HOLD / SELL call on every stock on the list**, grouped by call.
-Grouped rather than alphabetical, because the grouping is the answer: a flat table of
-thirty-three rows makes the reader do the sorting the screener exists to do.
+— then gives a **BUY / WATCH / HOLD / SELL call on every stock on the list**, grouped by call.
+`WATCH` surfaces discounted candidates that failed a confidence check; it is not a buy
+signal. Grouped rather than alphabetical, because the grouping is the answer: a flat
+table of thirty-three rows makes the reader do the sorting the screener exists to do.
 
 | Call | Trigger |
 |---|---|
 | `BUY` | Cleared the full bar: ≥30% margin, anchors agree, estimates not falling, gates passed |
-| `HOLD` | Within ±25% of the estimate, or cheap but blocked by disagreement or estimate cuts |
+| `WATCH` | ≥10% discount, but disagreement or falling estimates withheld `BUY` |
+| `HOLD` | No buy signal, and not >25% above the estimate |
 | `SELL` | >25% above the estimate, **or** any failed quality gate regardless of price |
 | `N/A` | A fund or crypto — these models do not apply |
+
+The morning post also lists up to **10 dividend-paying BUY/WATCH candidates**, ranked by
+annual dividend yield (annual cash dividend per share is shown when available). `WATCH`
+means a discount failed a confidence check, not a buy recommendation. Candidates must
+already pass the existing BUY/WATCH filters; the list can contain fewer than 10 or be
+absent when no qualifying dividend payers were found.
 
 **`SELL` does not mean "close your position".** A Yahoo watchlist export carries no
 quantity and no cost basis, so nothing here knows you hold it, what you paid, or what

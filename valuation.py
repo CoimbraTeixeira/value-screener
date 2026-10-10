@@ -425,6 +425,7 @@ NO_DATA = "NO DATA"
 # answers the stronger question with EXIT/TRIM/HOLD/ADD.
 
 RECOMMEND_BUY = "BUY"
+RECOMMEND_WATCH = "WATCH"
 RECOMMEND_HOLD = "HOLD"
 RECOMMEND_SELL = "SELL"
 RECOMMEND_NONE = "N/A"
@@ -436,12 +437,11 @@ SELL_PREMIUM = 0.25
 
 
 def recommendation(assessment: "Assessment") -> tuple[str, str]:
-    """One of BUY / HOLD / SELL / N/A, with the reason in a few words.
+    """One of BUY / WATCH / HOLD / SELL / N/A, with a concise reason.
 
-    A quality-gate failure is a SELL regardless of price: the gates fire on unprofitable
-    or cash-burning businesses, and a cheap price is not a reason to own one. Mild
-    overvaluation is HOLD rather than SELL, because the estimate's own error bar is
-    wider than ten percent and churning on that noise costs spread for nothing.
+    WATCH identifies a discount that is interesting but did not clear the full
+    buy bar because estimates are falling or anchors disagree. HOLD means there
+    is no current buy signal; neither label weakens the valuation gates.
     """
     if assessment.verdict == NO_DATA:
         return RECOMMEND_NONE, "these models do not apply"
@@ -466,11 +466,11 @@ def recommendation(assessment: "Assessment") -> tuple[str, str]:
         return RECOMMEND_SELL, f"{premium:.0%} above estimate"
 
     if assessment.verdict == WATCH and margin >= WATCH_MARGIN:
-        # Cheap enough to be interesting but blocked by disagreement or falling
-        # estimates; the note says which.
+        # Surface these discounted names as candidates, without calling them buys:
+        # the valuation layer has explicitly withheld BUY because confidence failed.
         reason = assessment.notes[0] if assessment.notes else (
             assessment.flags[0] if assessment.flags else f"{margin:.0%} below estimate")
-        return RECOMMEND_HOLD, reason
+        return RECOMMEND_WATCH, reason
     return RECOMMEND_HOLD, f"{margin:+.0%} vs estimate"
 
 
@@ -494,6 +494,9 @@ class Assessment:
     # description alongside the verdict without refetching.
     sector: str = ""
     business_summary: str = ""
+    # Annualized cash dividend per share and its yield at the screened price.
+    dividend_rate: float | None = None
+    dividend_yield: float | None = None
 
     @property
     def usable_anchors(self) -> list[Anchor]:
@@ -639,7 +642,8 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
         return Assessment(f.ticker, f.name, f.price, f.currency, NO_DATA, None, None,
                           anchors, gate_failures,
                           [f"{f.quote_type} is not a single company; these models do not apply"],
-                          f.analyst_target, flags, f.sector, f.business_summary)
+                          f.analyst_target, flags, f.sector, f.business_summary,
+                          f.dividend_rate, f.dividend_yield)
 
     usable = [a for a in anchors if a.value is not None]
     if len(usable) < 2:
@@ -650,7 +654,8 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
                           AVOID if gate_failures else NO_DATA, None, None,
                           anchors, gate_failures,
                           ["fewer than two anchors could be computed"], f.analyst_target,
-                          flags, f.sector, f.business_summary)
+                          flags, f.sector, f.business_summary,
+                          f.dividend_rate, f.dividend_yield)
 
     fair_value = median(a.value for a in usable)
     margin = (fair_value - f.price) / fair_value if fair_value > 0 else None
@@ -687,4 +692,4 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
 
     return Assessment(f.ticker, f.name, f.price, f.currency, verdict, fair_value, margin,
                       anchors, gate_failures, notes, f.analyst_target, flags,
-                      f.sector, f.business_summary)
+                      f.sector, f.business_summary, f.dividend_rate, f.dividend_yield)
