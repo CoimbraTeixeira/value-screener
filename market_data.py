@@ -17,6 +17,7 @@ import os
 import time
 from datetime import date
 from pathlib import Path
+from statistics import median
 
 import yfinance as yf
 
@@ -37,6 +38,14 @@ FISCAL_PRICE_TOLERANCE_DAYS = 7
 # issuance policy: Apple's 2019 count reads 4.4bn against 17bn in 2020 purely because of
 # the 4:1 split, and treating that as 280% dilution would gut every DCF that spans it.
 MAX_PLAUSIBLE_SHARE_CHANGE = 0.35
+
+# Dividend payments kept per ticker: three years of quarterlies, enough to read the
+# cadence even across a skipped or rescheduled payment.
+DIVIDEND_HISTORY_POINTS = 12
+# Payment cadences a listed company actually uses: annual, semiannual, quarterly, monthly.
+PAYMENTS_PER_YEAR = (1, 2, 4, 12)
+# A dividend whose next payment is this many cadences overdue has been suspended.
+SUSPENDED_AFTER_GAPS = 1.5
 
 
 def offline() -> bool:
@@ -102,6 +111,48 @@ def _number(value) -> float | None:
     except (TypeError, ValueError):
         return None
     return None if result != result else result
+
+
+def annual_dividend(payments: list, as_of: date) -> float | None:
+    """The current annual dividend per share, read off the actual payment history.
+
+    Replaces Yahoo's `dividendRate`, which vanished from the feed in October 2026. Its
+    `trailingAnnualDividendRate` is not a substitute: it read 1.30 for JNJ against a real
+    5.36, and 0.28 for NVDA after the payout went to 0.25 a quarter.
+
+    Quarterly and monthly payers are annualised from the latest payment, so a raise or a
+    cut counts the day it is paid -- matching what `dividendRate` reported. Semiannual
+    and annual payers are summed over the last year instead, because European interim
+    and final dividends differ: Novo Nordisk pays 3.75 then 7.95, and doubling the latest
+    payment would understate it by a third. None when there are too few payments to read
+    a cadence, or the next one is overdue (Intel suspended in 2024).
+    """
+    dated = [(date.fromisoformat(day), amount) for day, amount in payments if amount > 0]
+    if len(dated) < 2:
+        return None
+    recent = dated[-5:]
+    gap = median((later[0] - earlier[0]).days for earlier, later in zip(recent, recent[1:]))
+    if gap <= 0:
+        return None
+    per_year = min(PAYMENTS_PER_YEAR, key=lambda n: abs((365.25 / n) / gap - 1))
+    if (as_of - dated[-1][0]).days > SUSPENDED_AFTER_GAPS * 365.25 / per_year:
+        return None
+    if per_year >= 4:
+        return dated[-1][1] * per_year
+    return sum(amount for _, amount in dated[-per_year:])
+
+
+def _dividend_payments(handle) -> list[list]:
+    """Recent dividend payments as [ISO ex-date, amount], oldest first."""
+    try:
+        series = handle.dividends
+    except Exception:
+        return []
+    if series is None or series.empty:
+        return []
+    return [[day.date().isoformat(), float(amount)]
+            for day, amount in series.tail(DIVIDEND_HISTORY_POINTS).items()
+            if _number(amount)]
 
 
 def _series(frame, row: str) -> list[float]:
@@ -314,6 +365,7 @@ def fetch(ticker: str, *, quote_ttl: float = QUOTE_TTL_SECONDS,
             "dividendRate", "payoutRatio", "returnOnEquity", "debtToEquity",
             "earningsGrowth", "targetMeanPrice", "targetHighPrice", "targetLowPrice")}
         quote["fetched_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        quote["dividends"] = _dividend_payments(handle)
         _write_cache(quote_file, quote)
 
     statements = _read_cache(statement_file, statement_ttl)
@@ -358,7 +410,13 @@ def _fundamentals(symbol: str, quote: dict, statements: dict,
     fcf_history = [v for v in statements.get("fcf_history", []) if v is not None]
     free_cash_flow = fcf_history[-1] if fcf_history else _number(quote.get("freeCashflow"))
 
-    dividend_rate = _number(quote.get("dividendRate"))
+    # Yahoo's own `dividendRate` still wins if it ever returns; otherwise the rate is
+    # read off the payment history as of the fetch date, so a replayed recording values
+    # the same as on the day it was made.
+    fetched_on = quote.get("fetched_at", "")[:10]
+    as_of = date.fromisoformat(fetched_on) if fetched_on else date.today()
+    dividend_rate = (_number(quote.get("dividendRate"))
+                     or annual_dividend(quote.get("dividends") or [], as_of))
     return Fundamentals(
         ticker=symbol,
         price=price,
