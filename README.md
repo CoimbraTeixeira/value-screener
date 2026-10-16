@@ -40,11 +40,11 @@ number that looks like the others and is pure noise.
 
 | Anchor | Method | Blind spot |
 |---|---|---|
-| `dcf` | Two-stage discounted free cash flow + net cash, adjusted for share issuance/buybacks. | Very sensitive to the discount rate. Abstains for banks, which have no meaningful FCF. |
+| `dcf` | Two-stage discounted free cash flow + net cash, adjusted for share issuance/buybacks. | Very sensitive to the discount rate. Abstains for the Financial Services and Real Estate sectors, where FCF is not meaningful. |
 | `hist_pe` | Current EPS × the median multiple *this stock* has traded at. | Anchors to the past. Capped at 30x so a bubble year is not treated as normal. |
 | `fwd_pe` | Next year's consensus EPS at that same multiple, discounted back a year. | A forecast. Abstains below 3 analysts. |
 | `graham` | `sqrt(22.5 × EPS × book value)` | Hostile to asset-light businesses. Often the low outlier for software. |
-| `dividend` | Gordon growth, with dividend growth from ROE × retention. | Abstains below a 1.5% yield. |
+| `dividend` | Gordon growth on the annual dividend, growth from ROE × retention. The rate is read off the payment history: latest payment × 4 or 12 for quarterly/monthly payers, last year's sum for semiannual/annual ones (interim and final differ). | Abstains below a 1.5% yield, or when the next payment is overdue (suspended). |
 
 `fwd_pe` is the only anchor that can see a recovery coming — every other model reads
 the past, so a company emerging from a bad year is permanently condemned by trailing
@@ -189,8 +189,9 @@ sensitive to, so it is a flag rather than a buried constant.
 - **Trailing EPS is TTM**, so a one-off writedown flips a healthy company to `AVOID`.
   Gilead screens as unprofitable on a single impairment charge. Read the `--explain`
   output before believing a verdict.
-- **Banks and REITs** get no DCF — free cash flow is not meaningful when lending is an
-  investing outflow or the business is capital expenditure. The cash-flow and leverage
+- **Banks, insurers and REITs** (Yahoo's Financial Services and Real Estate sectors) get
+  no DCF — free cash flow is not meaningful when lending is an investing outflow,
+  premiums are float, or the business is capital expenditure. The cash-flow and leverage
   gates are suspended for those two sectors; the profitability gate still applies.
 - **Cyclicals** look cheapest at the top of their cycle, when trailing earnings peak.
   Falling estimates now veto a `BUY`, which catches the case where analysts have already

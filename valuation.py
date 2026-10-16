@@ -240,6 +240,11 @@ def dcf_anchor(f: Fundamentals, risk_free: float = DEFAULT_RISK_FREE,
     discontinuity of a single-stage model where year 11 abruptly drops from 12% to 2.5%
     growth and the terminal value inherits an implausible base.
     """
+    if f.sector in FCF_EXEMPT_SECTORS:
+        # A bank's or insurer's operating cash flow is deposits and premium float moving
+        # through the balance sheet, and a REIT's is consumed by acquisitions. Discounting
+        # it valued MetLife at 8x its price.
+        return Anchor("dcf", None, f"free cash flow not meaningful for {f.sector}")
     if not f.free_cash_flow or f.free_cash_flow <= 0:
         return Anchor("dcf", None, "no positive free cash flow")
     if not f.shares_outstanding or f.shares_outstanding <= 0:
@@ -466,10 +471,13 @@ def recommendation(assessment: "Assessment") -> tuple[str, str]:
         return RECOMMEND_SELL, f"{premium:.0%} above estimate"
 
     if assessment.verdict == WATCH and margin >= WATCH_MARGIN:
-        # Surface these discounted names as candidates, without calling them buys:
-        # the valuation layer has explicitly withheld BUY because confidence failed.
-        reason = assessment.notes[0] if assessment.notes else (
-            assessment.flags[0] if assessment.flags else f"{margin:.0%} below estimate")
+        # Surface these discounted names as candidates, without calling them buys. The
+        # reason is the first warning on the estimate -- anchors disagreeing, then the
+        # forward flags. The analyst-target note is a contrast, not a warning: shown
+        # here it hid OTEX's 24% consensus cut behind "analyst target is 0.7x".
+        cautions = [note for note in [disagreement_note(assessment.usable_anchors)] if note]
+        cautions += assessment.flags
+        reason = cautions[0] if cautions else f"{margin:.0%} below estimate"
         return RECOMMEND_WATCH, reason
     return RECOMMEND_HOLD, f"{margin:+.0%} vs estimate"
 
@@ -542,6 +550,14 @@ def dispersion(anchors: list[Anchor]) -> float | None:
     if len(values) < 2:
         return None
     return max(values) / min(values)
+
+
+def disagreement_note(anchors: list[Anchor]) -> str | None:
+    """The warning for anchors spread too wide to trust, or None when they agree."""
+    spread = dispersion(anchors)
+    if spread is None or spread <= MAX_TRUSTED_DISPERSION:
+        return None
+    return f"anchors disagree {spread:.1f}x -- estimate is weak"
 
 
 def estimates_falling(forward: Forward | None) -> bool:
@@ -660,10 +676,10 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
     fair_value = median(a.value for a in usable)
     margin = (fair_value - f.price) / fair_value if fair_value > 0 else None
 
-    spread = dispersion(usable)
-    wide = spread is not None and spread > MAX_TRUSTED_DISPERSION
+    disagreement = disagreement_note(usable)
+    wide = disagreement is not None
     if wide:
-        notes.append(f"anchors disagree {spread:.1f}x -- estimate is weak")
+        notes.append(disagreement)
 
     falling = estimates_falling(f.forward)
 

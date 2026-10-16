@@ -74,13 +74,16 @@ class Mapping(unittest.TestCase):
         self.assertIn("do not apply", reason)
 
     def test_a_discount_blocked_from_buy_is_shown_as_watch(self):
-        """A cheap stock with a confidence blocker is a candidate, not a buy or a plain hold."""
-        trap = agreeing(forward=valuation.Forward(revisions_up=0, revisions_down=8))
+        """A cheap stock with a confidence blocker is a candidate, not a buy or a plain
+        hold, and the call has to name the blocker -- not an unrelated note."""
+        trap = agreeing(analyst_target=1.0,
+                        forward=valuation.Forward(revisions_up=0, revisions_down=8))
         result = assess(trap)
         self.assertEqual(result.verdict, valuation.WATCH)
         action, reason = recommendation(result)
         self.assertEqual(action, valuation.RECOMMEND_WATCH)
-        self.assertTrue(reason)
+        self.assertIn("estimates falling", reason)
+        self.assertNotIn("analyst target", reason)
 
 
     def test_every_verdict_maps_to_something(self):

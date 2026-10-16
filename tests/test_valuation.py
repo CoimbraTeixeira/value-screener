@@ -116,6 +116,12 @@ class DcfAnchor(unittest.TestCase):
     def test_abstains_on_negative_cash_flow(self):
         self.assertIsNone(dcf_anchor(healthy(free_cash_flow=-5.0e8)).value)
 
+    def test_abstains_for_financials_and_reits_even_with_positive_cash_flow(self):
+        """An insurer's operating cash flow is premium float; discounting it valued
+        MetLife at 8x its price and turned a fairly priced stock into a WATCH."""
+        for sector in ("Financial Services", "Real Estate"):
+            self.assertIsNone(dcf_anchor(healthy(sector=sector)).value, sector)
+
     def test_abstains_when_net_debt_swamps_the_cash_stream(self):
         anchor = dcf_anchor(healthy(total_debt=1.0e12, total_cash=0.0))
         self.assertIsNone(anchor.value)
