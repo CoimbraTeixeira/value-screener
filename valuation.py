@@ -472,10 +472,12 @@ def recommendation(assessment: "Assessment") -> tuple[str, str]:
 
     if assessment.verdict == WATCH and margin >= WATCH_MARGIN:
         # Surface these discounted names as candidates, without calling them buys. The
-        # reason names whatever withheld BUY, so the reader knows what to check first.
-        reason = f"{margin:.0%} below estimate"
-        if assessment.buy_withheld:
-            reason += "; not a buy: " + "; ".join(assessment.buy_withheld)
+        # reason is the first warning on the estimate -- anchors disagreeing, then the
+        # forward flags. The analyst-target note is a contrast, not a warning: shown
+        # here it hid OTEX's 24% consensus cut behind "analyst target is 0.7x".
+        cautions = [note for note in [disagreement_note(assessment.usable_anchors)] if note]
+        cautions += assessment.flags
+        reason = cautions[0] if cautions else f"{margin:.0%} below estimate"
         return RECOMMEND_WATCH, reason
     return RECOMMEND_HOLD, f"{margin:+.0%} vs estimate"
 
@@ -503,8 +505,6 @@ class Assessment:
     # Annualized cash dividend per share and its yield at the screened price.
     dividend_rate: float | None = None
     dividend_yield: float | None = None
-    # Why a discount deep enough for BUY was downgraded to WATCH. Empty otherwise.
-    buy_withheld: list[str] = field(default_factory=list)
 
     @property
     def usable_anchors(self) -> list[Anchor]:
@@ -552,16 +552,12 @@ def dispersion(anchors: list[Anchor]) -> float | None:
     return max(values) / min(values)
 
 
-def falling_estimates_flag(forward: Forward | None) -> str | None:
-    """The estimates-falling warning with its evidence, or None when they are not."""
-    if not estimates_falling(forward):
+def disagreement_note(anchors: list[Anchor]) -> str | None:
+    """The warning for anchors spread too wide to trust, or None when they agree."""
+    spread = dispersion(anchors)
+    if spread is None or spread <= MAX_TRUSTED_DISPERSION:
         return None
-    up, down = forward.revisions_up or 0, forward.revisions_down or 0
-    drift = forward.eps_drift_90d
-    detail = f"{down} down vs {up} up in 30d" if (up + down) else ""
-    if drift is not None and drift <= FALLING_ESTIMATES_DRIFT:
-        detail = (detail + ", " if detail else "") + f"consensus {drift:.1%} in 90d"
-    return f"estimates falling ({detail})"
+    return f"anchors disagree {spread:.1f}x -- estimate is weak"
 
 
 def estimates_falling(forward: Forward | None) -> bool:
@@ -594,9 +590,13 @@ def forward_flags(f: Fundamentals) -> list[str]:
         return []
 
     flags = []
-    falling = falling_estimates_flag(forward)
-    if falling:
-        flags.append(falling)
+    if estimates_falling(forward):
+        up, down = forward.revisions_up or 0, forward.revisions_down or 0
+        drift = forward.eps_drift_90d
+        detail = f"{down} down vs {up} up in 30d" if (up + down) else ""
+        if drift is not None and drift <= FALLING_ESTIMATES_DRIFT:
+            detail = (detail + ", " if detail else "") + f"consensus {drift:.1%} in 90d"
+        flags.append(f"estimates falling ({detail})")
 
     if forward.share_growth is not None and forward.share_growth > 0.02:
         flags.append(f"diluting {forward.share_growth:.1%}/yr")
@@ -676,14 +676,12 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
     fair_value = median(a.value for a in usable)
     margin = (fair_value - f.price) / fair_value if fair_value > 0 else None
 
-    spread = dispersion(usable)
-    wide = spread is not None and spread > MAX_TRUSTED_DISPERSION
-    disagreement = f"anchors disagree {spread:.1f}x -- estimate is weak" if wide else None
-    if disagreement:
+    disagreement = disagreement_note(usable)
+    wide = disagreement is not None
+    if wide:
         notes.append(disagreement)
 
-    falling = falling_estimates_flag(f.forward)
-    buy_withheld: list[str] = []
+    falling = estimates_falling(f.forward)
 
     if gate_failures:
         verdict = AVOID
@@ -695,8 +693,7 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
         # it are being cut is the shape of a value trap: the price has fallen because the
         # earnings are going to, and every backward-looking anchor is still pricing the
         # earnings that are about to disappear.
-        buy_withheld = [reason for reason in (disagreement, falling) if reason]
-        verdict = WATCH if buy_withheld else BUY
+        verdict = WATCH if (wide or falling) else BUY
     elif margin >= WATCH_MARGIN:
         verdict = WATCH
     elif margin >= FAIR_MARGIN:
@@ -711,5 +708,4 @@ def assess(f: Fundamentals, *, risk_free: float = DEFAULT_RISK_FREE,
 
     return Assessment(f.ticker, f.name, f.price, f.currency, verdict, fair_value, margin,
                       anchors, gate_failures, notes, f.analyst_target, flags,
-                      f.sector, f.business_summary, f.dividend_rate, f.dividend_yield,
-                      buy_withheld)
+                      f.sector, f.business_summary, f.dividend_rate, f.dividend_yield)

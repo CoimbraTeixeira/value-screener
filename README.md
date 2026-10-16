@@ -318,7 +318,7 @@ table of thirty-three rows makes the reader do the sorting the screener exists t
 | Call | Trigger |
 |---|---|
 | `BUY` | Cleared the full bar: ≥30% margin, anchors agree, estimates not falling, gates passed |
-| `WATCH` | ≥10% discount without clearing `BUY`; when disagreement or falling estimates withheld `BUY`, the reason names it |
+| `WATCH` | ≥10% discount, but disagreement or falling estimates withheld `BUY` |
 | `HOLD` | No buy signal, and not >25% above the estimate |
 | `SELL` | >25% above the estimate, **or** any failed quality gate regardless of price |
 | `N/A` | A fund or crypto — these models do not apply |
